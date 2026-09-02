@@ -1,0 +1,5 @@
+/data/lxwmcp/*
+!/data/lxwmcp/.gitkeep
+/includes/lxwmcp/config/local.php
+/.idea/
+*.log

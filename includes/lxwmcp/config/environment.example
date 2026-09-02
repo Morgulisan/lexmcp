@@ -1,0 +1,25 @@
+# Produktionsmodus erzwingt HTTPS für Lexware und Pflichtschlüssel.
+LEXMCP_ENV=production
+LEXMCP_PUBLIC_URL=https://lxwmcp.mopoliti.de
+
+# Bestehende Datei; nicht in dieses Projekt kopieren.
+LEXMCP_DATABASE_INCLUDE=/includes/api/sql.php
+
+# Optional. Ohne Umgebungsvariable wird der jeweilige Schlüssel einmalig im
+# privaten LEXMCP_DATA_PATH erzeugt und dauerhaft gespeichert.
+LEXMCP_ENCRYPTION_KEY=
+LEXMCP_FINGERPRINT_KEY=
+
+LEXMCP_DATA_PATH=/data/lxwmcp
+LEXMCP_LEXWARE_BASE_URL=https://api.lexware.io
+# Neueste MCP-Variante plus klassische Streamable-HTTP-Versionen. Diese breite
+# Auswahl vermeidet Verbindungsabbrueche bei Clients mit abweichendem Release.
+LEXMCP_PROTOCOL_VERSIONS=2026-07-28,2025-11-25,2025-06-18,2025-03-26,2024-11-05
+LEXMCP_ALLOWED_ORIGINS=https://lxwmcp.mopoliti.de
+
+# Kommagetrennte HTTPS-Hosts; leer deaktiviert URL-Uploads.
+LEXMCP_REMOTE_FILE_HOSTS=
+
+# Kritische Funktionen erst nach bewusster Prüfung aktivieren.
+LEXMCP_ENABLE_FINALIZE=false
+LEXMCP_ENABLE_DELETE=false

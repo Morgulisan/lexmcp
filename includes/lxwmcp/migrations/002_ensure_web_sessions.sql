@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS lxmcp_web_sessions (
+    session_hash CHAR(64) PRIMARY KEY,
+    user_id BIGINT UNSIGNED NOT NULL,
+    csrf_token CHAR(64) NOT NULL,
+    expires_at DATETIME(6) NOT NULL,
+    created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    last_seen_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
