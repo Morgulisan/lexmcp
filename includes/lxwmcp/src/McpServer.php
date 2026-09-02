@@ -19,7 +19,14 @@ final class McpServer
         $traceId = Util::uuid();
         $started = microtime(true);
         $authenticated = false;
+        $request = [];
+        $method = '';
+        $profile = 'legacy';
         try {
+            if (($_SERVER['REQUEST_METHOD'] ?? '') === 'OPTIONS') {
+                $this->respondOptions();
+                return;
+            }
             $this->validateHttpRequest();
             $body = file_get_contents('php://input', false, null, 0, 10485761);
             if (!is_string($body) || strlen($body) > 10485760) {
@@ -30,10 +37,19 @@ final class McpServer
             $method = (string) $request['method'];
             $params = is_array($request['params'] ?? null) ? $request['params'] : [];
             $this->validateRoutingHeaders($method, $params);
-            $this->validateVersion($method, $params);
-            $subject = $method === 'server/discover' ? null : $this->oauth->authenticateAccessToken();
+            $profile = $this->resolveProtocolProfile($method, $params);
+            $publicMethods = ['server/discover', 'initialize', 'notifications/initialized'];
+            $subject = in_array($method, $publicMethods, true) ? null : $this->oauth->authenticateAccessToken();
             $authenticated = $subject !== null;
-            $result = $this->dispatch($method, $params, $subject, $traceId);
+            if (str_starts_with($method, 'notifications/')) {
+                $this->respondEmpty(202);
+                SafeLogger::log('mcp_request', ['trace_id' => $traceId, 'operation' => $method, 'status' => 'accepted', 'duration_ms' => (int) ((microtime(true) - $started) * 1000)]);
+                return;
+            }
+            $result = $this->dispatch($method, $params, $subject, $traceId, $profile);
+            if ($profile === 'legacy') {
+                $result = $this->legacyResult($result);
+            }
             $this->respond(['jsonrpc' => '2.0', 'id' => $request['id'], 'result' => $this->stamp($result)], 200);
             SafeLogger::log('mcp_request', ['trace_id' => $traceId, 'operation' => $method, 'status' => 'complete', 'duration_ms' => (int) ((microtime(true) - $started) * 1000)]);
         } catch (AppError $e) {
@@ -45,6 +61,9 @@ final class McpServer
                     'structuredContent' => ['ok' => false, 'request_id' => $traceId, 'code' => $e->errorCode, 'message' => $e->getMessage(), 'retryable' => $e->retryable, 'details' => $this->safeDetails($e->details), 'suggested_action' => $e->suggestedAction],
                     'isError' => true,
                 ];
+                if ($profile === 'legacy') {
+                    unset($toolResult['resultType']);
+                }
                 $this->respond(['jsonrpc' => '2.0', 'id' => $request['id'], 'result' => $this->stamp($toolResult)], 200);
             } else {
                 $code = match ($e->errorCode) {
@@ -66,11 +85,14 @@ final class McpServer
         }
     }
 
-    private function dispatch(string $method, array $params, ?array $subject, string $traceId): array
+    private function dispatch(string $method, array $params, ?array $subject, string $traceId, string $profile = 'modern'): array
     {
         if ($method === 'server/discover') {
             Util::assertKeys($params, ['_meta']);
-            return ['resultType' => 'complete', 'supportedVersions' => Config::supportedVersions(), 'capabilities' => ['tools' => [], 'resources' => [], 'prompts' => []], 'instructions' => 'Select an account from lexware://accounts. Use read, write, finalize, and delete tools according to their separate safety boundaries.', 'ttlMs' => 300000, 'cacheScope' => 'public'];
+            return ['resultType' => 'complete', 'supportedVersions' => Config::supportedVersions(), 'capabilities' => ['tools' => (object) [], 'resources' => (object) [], 'prompts' => (object) []], 'instructions' => 'Select an account from lexware://accounts. Use read, write, finalize, and delete tools according to their separate safety boundaries.', 'ttlMs' => 300000, 'cacheScope' => 'public'];
+        }
+        if ($method === 'initialize') {
+            return $this->initialize($params);
         }
         if ($subject === null) {
             throw new AppError('invalid_token', 'Authentication required.', 401);
@@ -142,6 +164,38 @@ final class McpServer
         return ['resultType' => 'complete'] + $this->content->prompt(Util::requireString($params, 'name', 128), $arguments, $subject['user_id']);
     }
 
+    private function initialize(array $params): array
+    {
+        Util::assertKeys($params, ['protocolVersion', 'capabilities', 'clientInfo', '_meta']);
+        if (isset($params['capabilities']) && !is_array($params['capabilities'])) {
+            throw new AppError('invalid_request', 'Client capabilities must be an object.', 400);
+        }
+        if (isset($params['clientInfo']) && !is_array($params['clientInfo'])) {
+            throw new AppError('invalid_request', 'Client information must be an object.', 400);
+        }
+
+        $requested = is_string($params['protocolVersion'] ?? null) ? $params['protocolVersion'] : '';
+        $legacyVersions = array_keys(array_filter(Config::protocolProfiles(), static fn(string $profile): bool => $profile === 'legacy'));
+        $selected = in_array($requested, $legacyVersions, true) ? $requested : ($legacyVersions[0] ?? '2025-11-25');
+
+        return [
+            'protocolVersion' => $selected,
+            'capabilities' => [
+                'tools' => (object) [],
+                'resources' => (object) [],
+                'prompts' => (object) [],
+            ],
+            'serverInfo' => ['name' => self::SERVER_NAME, 'version' => self::SERVER_VERSION],
+            'instructions' => 'Select an account from lexware://accounts. Use read, write, finalize, and delete tools according to their separate safety boundaries.',
+        ];
+    }
+
+    private function legacyResult(array $result): array
+    {
+        unset($result['resultType'], $result['ttlMs'], $result['cacheScope'], $result['supportedVersions']);
+        return $result;
+    }
+
     private function validateHttpRequest(): void
     {
         if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST') {
@@ -165,7 +219,10 @@ final class McpServer
     private function validateEnvelope(array $request): void
     {
         Util::assertKeys($request, ['jsonrpc','id','method','params']);
-        if (($request['jsonrpc'] ?? null) !== '2.0' || !is_string($request['method'] ?? null) || !array_key_exists('id', $request) || !(is_int($request['id']) || is_string($request['id']))) {
+        $method = $request['method'] ?? null;
+        $notification = is_string($method) && str_starts_with($method, 'notifications/');
+        $validId = array_key_exists('id', $request) && (is_int($request['id']) || is_string($request['id']));
+        if (($request['jsonrpc'] ?? null) !== '2.0' || !is_string($method) || (!$notification && !$validId) || ($notification && array_key_exists('id', $request) && !$validId)) {
             throw new AppError('invalid_request', 'Invalid JSON-RPC 2.0 request envelope.', 400);
         }
         if (isset($request['params']) && !is_array($request['params'])) {
@@ -176,32 +233,41 @@ final class McpServer
     private function validateRoutingHeaders(string $method, array $params): void
     {
         $headerMethod = Util::header('Mcp-Method');
-        if ($headerMethod === null || !hash_equals($method, $headerMethod)) {
+        if ($headerMethod !== null && !hash_equals($method, $headerMethod)) {
             throw new AppError('header_mismatch', 'Mcp-Method does not match the JSON-RPC method.', 400);
         }
         if (in_array($method, ['tools/call','resources/read','prompts/get'], true)) {
             $expected = $method === 'resources/read' ? ($params['uri'] ?? null) : ($params['name'] ?? null);
             $headerName = Util::header('Mcp-Name');
-            if (!is_string($expected) || $headerName === null || !hash_equals($expected, $headerName)) {
+            if (!is_string($expected) || ($headerName !== null && !hash_equals($expected, $headerName))) {
                 throw new AppError('header_mismatch', 'Mcp-Name does not match the request target.', 400);
             }
         }
     }
 
-    private function validateVersion(string $method, array $params): void
+    private function resolveProtocolProfile(string $method, array $params): string
     {
         if ($method === 'server/discover') {
-            return;
+            return 'modern';
+        }
+        if ($method === 'initialize' || str_starts_with($method, 'notifications/')) {
+            return 'legacy';
         }
         $header = Util::header('MCP-Protocol-Version');
         $meta = is_array($params['_meta'] ?? null) ? $params['_meta'] : [];
         $bodyVersion = $meta['io.modelcontextprotocol/protocolVersion'] ?? null;
-        if (!is_string($header) || !in_array($header, Config::supportedVersions(), true)) {
-            throw new AppError('unsupported_protocol_version', 'Unsupported MCP protocol version.', 400, false, ['supportedVersions' => Config::supportedVersions()]);
+
+        $profiles = Config::protocolProfiles();
+        if (is_string($header) && isset($profiles[$header])) {
+            return $profiles[$header];
         }
-        if ($bodyVersion !== null && (!is_string($bodyVersion) || !hash_equals($header, $bodyVersion))) {
-            throw new AppError('header_mismatch', 'MCP protocol versions in header and body differ.', 400);
+        if (is_string($bodyVersion) && isset($profiles[$bodyVersion])) {
+            return $profiles[$bodyVersion];
         }
+
+        // Unknown or missing date versions are deliberately accepted. The modern
+        // routing header is a better wire-format signal than the version string.
+        return Util::header('Mcp-Method') !== null ? 'modern' : 'legacy';
     }
 
     private function scope(array $subject, string $required): void
