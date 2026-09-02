@@ -26,7 +26,7 @@ Die bereits vorhandene `/includes/api/sql.php` wird im Bootstrap direkt eingebun
 
 ## Installation
 
-1. Öffentliche Dateien nach `/html/lxwmcp.mopoliti.de` und private Dateien nach `/includes/lxwmcp` kopieren.
+1. Öffentliche Dateien einschließlich der versteckten `.htaccess` nach `/html/lxwmcp.mopoliti.de` und private Dateien nach `/includes/lxwmcp` kopieren.
 2. `/data/lxwmcp` für den Webserver beschreibbar und dauerhaft anlegen. Wenn keine Schlüssel als Umgebungsvariablen gesetzt sind, werden sie dort einmalig erzeugt; ein Verlust dieses Verzeichnisses macht gespeicherte API-Keys unlesbar.
 3. Die Werte aus `includes/lxwmcp/config/environment.example` als echte Server-Umgebungsvariablen setzen. Secrets niemals in den Webroot oder ins Repository schreiben.
 4. Optional zwei unabhängige Schlüssel als Umgebungsvariablen setzen. Ohne diese Variablen erzeugt der Server sie automatisch im privaten Datenverzeichnis:
@@ -50,8 +50,43 @@ Der vorhandene Login ist nur die Onboarding-Brücke. Das Passwort wird serversei
 
 MCP verwendet anschließend OAuth Authorization Code mit PKCE-S256. Metadaten stehen unter:
 
-- `/.well-known/oauth-protected-resource`
-- `/.well-known/oauth-authorization-server`
+- `/.well-known/oauth-protected-resource` und `/.well-known/oauth-protected-resource/mcp`
+- `/.well-known/oauth-authorization-server` und `/.well-known/oauth-authorization-server/mcp`
+- `/.well-known/openid-configuration` (identisch zu den Authorization-Server-Metadaten)
+
+Diese Dokumente müssen öffentlich erreichbar sein. Viele Hosting-Konfigurationen
+sperren pauschal jeden Pfad, der mit einem Punkt beginnt; ein MCP-Client bricht
+dann bereits bei der Suche nach dem Authorization Server mit HTTP 403 ab. Auf
+diesem Host geschieht die Sperre in einem Abschnitt, den weder ein Rewrite noch
+ein `<Files>`-Grant der `.htaccess` erreicht, deshalb sind drei Ebenen nötig:
+
+1. `<If>` in der `.htaccess` gibt `/.well-known/` wieder frei; dieser Abschnitt
+   wird als letzter gemergt und benötigt `AllowOverride All`.
+2. `ErrorDocument 403` verweist auf eine absolute URL. Apache beantwortet das
+   mit einer Weiterleitung statt mit dem ursprünglichen Status, sodass ein
+   gesperrter Discovery-Request auf `/oauth/discovery` landet. Dieses Dokument
+   enthält die Felder beider Metadatenformate; jedes Format ignoriert die ihm
+   unbekannten Member.
+3. Punktfreie Spiegel: `/oauth/protected-resource`, `/oauth/authorization-server`
+   sowie die vom MCP-Standard vorgesehenen Ersatzendpunkte `/authorize`,
+   `/token`, `/register` und `/revoke` auf Root-Ebene; sie verhalten sich
+   identisch zu den Pfaden unter `/oauth/`.
+
+Sauberer als alle drei ist eine Freigabe in der vHost-Konfiguration:
+
+```apache
+<LocationMatch "^/\.well-known/">
+    Require all granted
+</LocationMatch>
+```
+
+Optionale Parameter werden standardkonform behandelt: unbekannte Parameter am
+Authorization-Endpunkt werden ignoriert, ein fehlender `resource`-Parameter fällt
+auf `https://lxwmcp.mopoliti.de/mcp` zurück, ein fremder wird weiterhin abgelehnt.
+
+Der gesamte MCP-Endpunkt ist geschützt. Auch `server/discover`, `initialize` und
+MCP-Benachrichtigungen erfordern ein gültiges Bearer-Token; ein Request ohne Token
+antwortet mit HTTP 401 und einer `WWW-Authenticate`-Challenge zur OAuth-Erkennung.
 
 Die im MCP-Client einzutragende Serveradresse ist `https://lxwmcp.mopoliti.de/mcp`.
 

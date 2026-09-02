@@ -1,21 +1,39 @@
 Options -Indexes
 RewriteEngine On
 
+# Preserve bearer credentials when PHP is served through CGI/FastCGI.
+RewriteCond %{HTTP:Authorization} .
+RewriteRule ^ - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
 # The public endpoint is behind a TLS-terminating reverse proxy. Apache sees
 # that internal hop as HTTP, so also honor the original request scheme.
 RewriteCond %{HTTPS} !=on
 RewriteCond %{HTTP:X-Forwarded-Proto} !^https$ [NC]
 RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=308,L]
 
-# OAuth discovery deliberately uses dot paths. Route these two public metadata
-# documents before the generic hidden-file protection is evaluated.
-RewriteRule ^\.well-known/(oauth-protected-resource(?:/mcp)?|oauth-authorization-server)$ index.php [END,QSA]
+# Only the Apache configuration files stay protected. A blanket dot-path denial
+# would block the OAuth discovery documents, which must be public.
+<FilesMatch "^\.ht">
+    Require all denied
+</FilesMatch>
 
-# All other dot paths remain inaccessible.
-RewriteRule (^|/)\. - [F,L]
+# This host denies dot paths in a section that a per-directory rewrite and a
+# <Files> grant cannot reach. <If> is merged last, so it is the only place left
+# where the discovery directory can be granted again. Nothing else lives under
+# /.well-known/, so the whole prefix is opened.
+<If "%{REQUEST_URI} =~ m#^/\.well-known/#">
+    Require all granted
+</If>
 
+# Everything that is not a real file is answered by the front controller,
+# including the /.well-known discovery documents.
 RewriteCond %{REQUEST_FILENAME} !-f
 RewriteRule ^ index.php [END,QSA]
+
+# Last resort for a denial that happens before any handler runs: an external
+# error document is answered with a redirect instead of the original status, so
+# a blocked discovery request still reaches a readable metadata document.
+ErrorDocument 403 https://lxwmcp.mopoliti.de/oauth/discovery
 
 <FilesMatch "\.(?:ini|log|sql|json|md)$">
     Require all denied

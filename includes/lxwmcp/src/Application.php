@@ -5,9 +5,31 @@ namespace LexMcp;
 
 final class Application
 {
+    private const DISCOVERY_RESOURCE = '/.well-known/oauth-protected-resource';
+    private const DISCOVERY_SERVER = '/.well-known/oauth-authorization-server';
+    private const DISCOVERY_COMBINED = '/oauth/discovery';
+
+    /**
+     * MCP clients fall back to these issuer-root endpoints whenever authorization
+     * server metadata cannot be fetched, so both spellings reach the same handler.
+     */
+    private const ROUTE_ALIASES = [
+        '/authorize' => '/oauth/authorize',
+        '/token' => '/oauth/token',
+        '/register' => '/oauth/register',
+        '/revoke' => '/oauth/revoke',
+        '/.well-known/oauth-protected-resource/mcp' => self::DISCOVERY_RESOURCE,
+        '/.well-known/oauth-authorization-server/mcp' => self::DISCOVERY_SERVER,
+        '/.well-known/openid-configuration' => self::DISCOVERY_SERVER,
+        '/.well-known/openid-configuration/mcp' => self::DISCOVERY_SERVER,
+        '/oauth/protected-resource' => self::DISCOVERY_RESOURCE,
+        '/oauth/authorization-server' => self::DISCOVERY_SERVER,
+    ];
+
     public static function run(\PDO $pdo): void
     {
         $traceId = Util::uuid();
+        $path = '';
         try {
             $pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
             $pdo->exec('SET NAMES utf8mb4');
@@ -22,20 +44,31 @@ final class Application
             $tools = new ToolRouter($accounts, $aliases, $validator, $client, $idempotency, $pdo);
             $content = new ContentRegistry($accounts);
 
-            $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+            $path = self::route(self::requestPath());
             $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
             self::securityHeaders();
+
+            // Hosting layers frequently deny every dot path before mod_rewrite runs.
+            // The 403 handler routes such a request back into the front controller,
+            // where only the public discovery documents are served.
+            if (self::deniedBeforeRouting() && !self::isDiscoveryPath($path)) {
+                throw new AppError('forbidden', 'Access to this path is denied.', 403);
+            }
 
             if ($path === '/mcp') {
                 (new McpServer($oauth, $tools, $content))->handle();
                 return;
             }
-            if (in_array($path, ['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp'], true)) {
+            if ($path === self::DISCOVERY_RESOURCE) {
                 self::json($oauth->protectedResourceMetadata());
                 return;
             }
-            if ($path === '/.well-known/oauth-authorization-server') {
+            if ($path === self::DISCOVERY_SERVER) {
                 self::json($oauth->authorizationServerMetadata());
+                return;
+            }
+            if ($path === self::DISCOVERY_COMBINED) {
+                self::json($oauth->discoveryMetadata());
                 return;
             }
             if ($path === '/oauth/register' && $method === 'POST') {
@@ -80,11 +113,69 @@ final class Application
         } catch (AppError $e) {
             $safePath = parse_url((string) ($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH) ?: '/';
             SafeLogger::log('http_error', ['trace_id' => $traceId, 'operation' => $safePath, 'http_status' => $e->httpStatus, 'error_code' => $e->errorCode]);
+            if (self::wantsHtml($path, Util::header('Accept'))) {
+                self::htmlError($e, $traceId);
+                return;
+            }
             self::json(['error' => $e->errorCode, 'message' => $e->getMessage(), 'trace_id' => $traceId], $e->httpStatus);
         } catch (\Throwable $e) {
             SafeLogger::log('http_error', ['trace_id' => $traceId, 'http_status' => 500, 'error_code' => 'internal_error']);
             self::json(['error' => 'internal_error', 'message' => 'Internal server error.', 'trace_id' => $traceId], 500);
         }
+    }
+
+    /** Browser routes answer a person, not a client library. */
+    private static function wantsHtml(string $route, ?string $accept): bool
+    {
+        if (!in_array($route, ['/oauth/authorize', '/accounts'], true)) {
+            return false;
+        }
+        $accept = strtolower((string) $accept);
+        return $accept === '' || str_contains($accept, 'text/html') || str_contains($accept, '*/*');
+    }
+
+    private static function htmlError(AppError $e, string $traceId): void
+    {
+        self::status($e->httpStatus);
+        header('Content-Type: text/html; charset=utf-8');
+        header('Cache-Control: no-store');
+        header("Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'");
+        echo '<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Autorisierung nicht möglich</title>'
+            . '<style>body{font:16px system-ui;max-width:720px;margin:3rem auto;padding:0 1rem;color:#18212b}code{font-size:.85em;color:#5b6774}</style><body>'
+            . '<h1>Autorisierung nicht möglich</h1><p>' . OAuth::h($e->getMessage()) . '</p>'
+            . '<p>Bitte die Verbindung im MCP-Client neu starten. Ein Autorisierungsvorgang gilt 30 Minuten und kann nur einmal bestätigt werden.</p>'
+            . '<p><code>' . OAuth::h($e->errorCode) . ' · ' . OAuth::h($traceId) . '</code></p></body></html>';
+    }
+
+    private static function requestPath(): string
+    {
+        $path = parse_url((string) ($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH);
+        if (!is_string($path) || $path === '') {
+            $path = '/';
+        }
+        // An ErrorDocument handler is reached with the front controller in
+        // REQUEST_URI; the denied path is then only available in REDIRECT_URL.
+        $redirected = $_SERVER['REDIRECT_URL'] ?? null;
+        if (str_ends_with($path, '/index.php') && is_string($redirected) && $redirected !== '') {
+            $path = $redirected;
+        }
+        return $path === '/' ? '/' : rtrim($path, '/');
+    }
+
+    private static function route(string $path): string
+    {
+        return self::ROUTE_ALIASES[$path] ?? $path;
+    }
+
+    private static function isDiscoveryPath(string $route): bool
+    {
+        return $route === self::DISCOVERY_RESOURCE || $route === self::DISCOVERY_SERVER || $route === self::DISCOVERY_COMBINED;
+    }
+
+    private static function deniedBeforeRouting(): bool
+    {
+        $status = $_SERVER['REDIRECT_STATUS'] ?? null;
+        return is_scalar($status) && (int) $status === 403;
     }
 
     private static function accounts(string $method, OAuth $oauth, AccountStore $accounts, LexwareClient $client): void
@@ -179,9 +270,26 @@ final class Application
 
     private static function json(array $body, int $status = 200): void
     {
-        http_response_code($status);
+        self::status($status);
         header('Content-Type: application/json; charset=utf-8');
         header('Cache-Control: no-store');
         echo Util::jsonEncode($body);
+    }
+
+    /**
+     * An ErrorDocument response keeps the status Apache picked unless the handler
+     * states its own. Under CGI and FastCGI only a full status line is forwarded,
+     * so a rescued discovery document would otherwise stay the 403 that makes MCP
+     * clients abort their authorization server lookup.
+     */
+    private static function status(int $status): void
+    {
+        $reasons = [
+            200 => 'OK', 201 => 'Created', 400 => 'Bad Request', 401 => 'Unauthorized',
+            403 => 'Forbidden', 404 => 'Not Found', 405 => 'Method Not Allowed',
+            413 => 'Payload Too Large', 415 => 'Unsupported Media Type', 500 => 'Internal Server Error',
+        ];
+        http_response_code($status);
+        header('HTTP/1.1 ' . $status . ' ' . ($reasons[$status] ?? 'Status'), true, $status);
     }
 }

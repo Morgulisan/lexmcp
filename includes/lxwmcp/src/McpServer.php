@@ -6,7 +6,7 @@ namespace LexMcp;
 final class McpServer
 {
     private const SERVER_NAME = 'de.mopoliti.lexware-office';
-    private const SERVER_VERSION = '1.1.0';
+    private const SERVER_VERSION = '1.1.1';
 
     public function __construct(
         private readonly OAuth $oauth,
@@ -38,9 +38,11 @@ final class McpServer
             $params = is_array($request['params'] ?? null) ? $request['params'] : [];
             $this->validateRoutingHeaders($method, $params);
             $profile = $this->resolveProtocolProfile($method, $params);
-            $publicMethods = ['server/discover', 'initialize', 'notifications/initialized'];
-            $subject = in_array($method, $publicMethods, true) ? null : $this->oauth->authenticateAccessToken();
-            $authenticated = $subject !== null;
+            // This is a per-server protected resource. Requiring the bearer token
+            // during initialization is what triggers OAuth discovery in MCP hosts;
+            // allowing initialize here makes the server appear authentication-free.
+            $subject = $this->authenticateRequest();
+            $authenticated = true;
             if (str_starts_with($method, 'notifications/')) {
                 $this->respondEmpty(202);
                 SafeLogger::log('mcp_request', ['trace_id' => $traceId, 'operation' => $method, 'status' => 'accepted', 'duration_ms' => (int) ((microtime(true) - $started) * 1000)]);
@@ -107,6 +109,11 @@ final class McpServer
             'prompts/get' => $this->getPrompt($params, $subject),
             default => throw new AppError('method_not_found', 'MCP method not found.', 404),
         };
+    }
+
+    private function authenticateRequest(): array
+    {
+        return $this->oauth->authenticateAccessToken();
     }
 
     private function callTool(array $params, array $subject, string $traceId): array

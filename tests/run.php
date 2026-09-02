@@ -4,7 +4,7 @@ declare(strict_types=1);
 putenv('LEXMCP_ENV=test');
 
 $src = dirname(__DIR__) . '/includes/lxwmcp/src/';
-foreach (['AppError.php','Util.php','Config.php','SafeLogger.php','Migrator.php','Crypto.php','AccountStore.php','OAuth.php','AliasResolver.php','Validator.php','RateLimiter.php','LexwareClient.php','IdempotencyStore.php','ContentRegistry.php','ToolRouter.php','McpServer.php'] as $file) {
+foreach (['AppError.php','Util.php','Config.php','SafeLogger.php','Migrator.php','Crypto.php','AccountStore.php','OAuth.php','AliasResolver.php','Validator.php','RateLimiter.php','LexwareClient.php','IdempotencyStore.php','ContentRegistry.php','ToolRouter.php','McpServer.php','Application.php'] as $file) {
     require_once $src . $file;
 }
 require_once __DIR__ . '/TestSuite.php';
@@ -12,6 +12,7 @@ require_once __DIR__ . '/TestSuite.php';
 use LexMcp\AccountStore;
 use LexMcp\AliasResolver;
 use LexMcp\AppError;
+use LexMcp\Application;
 use LexMcp\Config;
 use LexMcp\ContentRegistry;
 use LexMcp\Crypto;
@@ -302,6 +303,110 @@ $suite->test('OAuth metadata exposes PKCE, rotation scopes, and the MCP resource
     $suite->assertSame(true, $metadata['client_id_metadata_document_supported']);
     $suite->assertSame(Config::resourceUrl(), $resource['resource']);
     $suite->assertTrue(in_array('lexware:finalize', $metadata['scopes_supported'], true));
+});
+
+$suite->test('the combined discovery document answers both metadata lookups', function () use ($suite): void {
+    /** @var OAuth $oauth */
+    $oauth = (new ReflectionClass(OAuth::class))->newInstanceWithoutConstructor();
+    $combined = $oauth->discoveryMetadata();
+    foreach (['issuer','authorization_endpoint','token_endpoint','registration_endpoint','code_challenge_methods_supported'] as $key) {
+        $suite->assertTrue(isset($combined[$key]), "authorization server field {$key} is missing");
+    }
+    foreach (['resource','authorization_servers','bearer_methods_supported'] as $key) {
+        $suite->assertTrue(isset($combined[$key]), "protected resource field {$key} is missing");
+    }
+    $suite->assertSame(Config::resourceUrl(), $combined['resource']);
+    $suite->assertSame(Config::publicUrl(), $combined['issuer']);
+});
+
+$suite->test('MCP request authentication rejects a missing bearer token', function () use ($suite): void {
+    /** @var OAuth $oauth */
+    $oauth = (new ReflectionClass(OAuth::class))->newInstanceWithoutConstructor();
+    $tools = (new ReflectionClass(ToolRouter::class))->newInstanceWithoutConstructor();
+    $content = (new ReflectionClass(ContentRegistry::class))->newInstanceWithoutConstructor();
+    $server = new McpServer($oauth, $tools, $content);
+    $authenticate = new ReflectionMethod($server, 'authenticateRequest');
+    unset($_SERVER['HTTP_AUTHORIZATION'], $_SERVER['REDIRECT_HTTP_AUTHORIZATION']);
+    $suite->assertThrows(AppError::class, fn() => $authenticate->invoke($server), 'invalid_token');
+});
+
+$suite->test('authorization header survives an Apache internal redirect', function () use ($suite): void {
+    unset($_SERVER['HTTP_AUTHORIZATION']);
+    $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] = 'Bearer redirected-token';
+    try {
+        $suite->assertSame('redirected-token', Util::bearerToken());
+    } finally {
+        unset($_SERVER['REDIRECT_HTTP_AUTHORIZATION']);
+    }
+});
+
+$suite->test('discovery documents stay reachable when the host denies dot paths', function () use ($suite): void {
+    $requestPath = new ReflectionMethod(Application::class, 'requestPath');
+    $route = new ReflectionMethod(Application::class, 'route');
+    $denied = new ReflectionMethod(Application::class, 'deniedBeforeRouting');
+    $discovery = new ReflectionMethod(Application::class, 'isDiscoveryPath');
+    $previous = $_SERVER;
+    try {
+        $_SERVER['REQUEST_URI'] = '/index.php';
+        $_SERVER['REDIRECT_URL'] = '/.well-known/oauth-authorization-server';
+        $_SERVER['REDIRECT_STATUS'] = '403';
+        $path = $route->invoke(null, $requestPath->invoke(null));
+        $suite->assertSame('/.well-known/oauth-authorization-server', $path);
+        $suite->assertTrue($denied->invoke(null));
+        $suite->assertTrue($discovery->invoke(null, $path));
+        $suite->assertTrue(!$discovery->invoke(null, '/accounts'));
+    } finally {
+        $_SERVER = $previous;
+    }
+});
+
+$suite->test('metadata aliases and issuer-root fallback endpoints resolve', function () use ($suite): void {
+    $route = new ReflectionMethod(Application::class, 'route');
+    $suite->assertSame('/.well-known/oauth-authorization-server', $route->invoke(null, '/.well-known/openid-configuration'));
+    $suite->assertSame('/.well-known/oauth-protected-resource', $route->invoke(null, '/.well-known/oauth-protected-resource/mcp'));
+    $suite->assertSame('/oauth/authorize', $route->invoke(null, '/authorize'));
+    $suite->assertSame('/oauth/token', $route->invoke(null, '/token'));
+    $suite->assertSame('/oauth/register', $route->invoke(null, '/register'));
+    $suite->assertSame('/.well-known/oauth-protected-resource', $route->invoke(null, '/oauth/protected-resource'));
+    $suite->assertSame('/.well-known/oauth-authorization-server', $route->invoke(null, '/oauth/authorization-server'));
+    $suite->assertSame('/mcp', $route->invoke(null, '/mcp'));
+});
+
+$suite->test('the consent page allows a redirect to the registered callback origin', function () use ($suite): void {
+    $suite->assertSame('http://127.0.0.1:33418', OAuth::formActionSource('http://127.0.0.1:33418/callback'));
+    $suite->assertSame('https://claude.ai', OAuth::formActionSource('https://claude.ai/api/mcp/auth_callback'));
+    $suite->assertSame(null, OAuth::formActionSource('javascript:alert(1)'));
+    // Only the origin survives, so nothing from the URI can extend the policy.
+    $suite->assertSame('https://evil.example', OAuth::formActionSource("https://evil.example/x';script-src *"));
+    $suite->assertSame(null, OAuth::formActionSource('https://ho st.example/cb'));
+});
+
+$suite->test('native loopback redirects may select an ephemeral port', function () use ($suite): void {
+    $matches = new ReflectionMethod(OAuth::class, 'isRegisteredRedirectUri');
+    $registered = ['http://127.0.0.1/callback', 'http://localhost/callback'];
+    $suite->assertTrue($matches->invoke(null, 'http://127.0.0.1:65352/callback', $registered));
+    $suite->assertTrue(!$matches->invoke(null, 'http://localhost:49152/callback', $registered));
+    $suite->assertTrue(!$matches->invoke(null, 'http://127.0.0.2:65352/callback', $registered));
+    $suite->assertTrue(!$matches->invoke(null, 'http://127.0.0.1:65352/other', $registered));
+    $suite->assertTrue(!$matches->invoke(null, 'http://127.0.0.1:65352/callback?next=evil', $registered));
+    $suite->assertTrue(!$matches->invoke(null, 'https://127.0.0.1:65352/callback', $registered));
+});
+
+$suite->test('browser routes answer a person with HTML, clients with JSON', function () use ($suite): void {
+    $wantsHtml = new ReflectionMethod(Application::class, 'wantsHtml');
+    $suite->assertTrue($wantsHtml->invoke(null, '/oauth/authorize', 'text/html,application/xhtml+xml'));
+    $suite->assertTrue($wantsHtml->invoke(null, '/accounts', null));
+    $suite->assertTrue(!$wantsHtml->invoke(null, '/oauth/token', 'text/html'));
+    $suite->assertTrue(!$wantsHtml->invoke(null, '/oauth/authorize', 'application/json'));
+});
+
+$suite->test('OAuth resource indicators are optional and normalized', function () use ($suite): void {
+    $canonical = new ReflectionMethod(OAuth::class, 'canonicalResource');
+    $suite->assertSame(Config::resourceUrl(), $canonical->invoke(null, null));
+    $suite->assertSame(Config::resourceUrl(), $canonical->invoke(null, Config::resourceUrl() . '/'));
+    $suite->assertSame(Config::resourceUrl(), $canonical->invoke(null, Config::publicUrl()));
+    $suite->assertThrows(AppError::class, fn() => $canonical->invoke(null, 'https://attacker.example/mcp'), 'invalid_target');
+    $suite->assertThrows(AppError::class, fn() => $canonical->invoke(null, 'not-a-url'), 'invalid_target');
 });
 
 $suite->test('retry parsing and uncertain-write classification are conservative', function () use ($suite): void {

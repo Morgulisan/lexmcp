@@ -83,6 +83,9 @@ final class Util
             $key = 'CONTENT_LENGTH';
         }
         $value = $_SERVER[$key] ?? null;
+        if ($name === 'Authorization' && (!is_string($value) || $value === '')) {
+            $value = $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? null;
+        }
         return is_string($value) && $value !== '' ? trim($value) : null;
     }
 
