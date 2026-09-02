@@ -69,6 +69,11 @@ final class Config
         return array_keys(self::protocolProfiles());
     }
 
+    public static function wireProfile(string $version): ?string
+    {
+        return self::VERIFIED_PROTOCOL_PROFILES[$version] ?? null;
+    }
+
     public static function protocolProfiles(): array
     {
         $raw = self::env('LEXMCP_PROTOCOL_VERSIONS', '2026-07-28,2025-11-25,2025-06-18,2025-03-26,2024-11-05');

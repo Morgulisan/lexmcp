@@ -105,9 +105,11 @@ $suite->test('handbooks and skills are discovered without code registration', fu
     $suite->assertTrue(in_array('skill://lexware/incoming-voucher-folder/SKILL.md', $uris, true));
 });
 
-$suite->test('modern MCP version profile is advertised', function () use ($suite): void {
+$suite->test('modern and classic MCP version profiles are advertised', function () use ($suite): void {
     $suite->assertTrue(in_array('2026-07-28', Config::supportedVersions(), true));
     $suite->assertSame('modern', Config::protocolProfiles()['2026-07-28']);
+    $suite->assertSame('legacy', Config::protocolProfiles()['2025-11-25']);
+    $suite->assertSame('legacy', Config::protocolProfiles()['2024-11-05']);
 });
 
 $suite->test('unreviewed future MCP versions are not enabled by configuration alone', function () use ($suite): void {
@@ -115,7 +117,7 @@ $suite->test('unreviewed future MCP versions are not enabled by configuration al
     try {
         $suite->assertThrows(RuntimeException::class, fn() => Config::protocolProfiles());
     } finally {
-        putenv('LEXMCP_PROTOCOL_VERSIONS=2026-07-28');
+        putenv('LEXMCP_PROTOCOL_VERSIONS');
     }
 });
 
@@ -136,13 +138,61 @@ $suite->test('server discovery advertises actual capabilities and cache hints', 
     $result = $method->invoke($server, 'server/discover', [], null, Util::uuid());
     $suite->assertSame('complete', $result['resultType']);
     $suite->assertTrue(isset($result['capabilities']['tools'], $result['ttlMs'], $result['cacheScope']));
+    $suite->assertSame('{"tools":{},"resources":{},"prompts":{}}', Util::jsonEncode($result['capabilities']));
+});
+
+$suite->test('classic initialize negotiates known versions and falls back compatibly', function () use ($suite): void {
+    $oauth = (new ReflectionClass(OAuth::class))->newInstanceWithoutConstructor();
+    $tools = (new ReflectionClass(ToolRouter::class))->newInstanceWithoutConstructor();
+    $content = (new ReflectionClass(ContentRegistry::class))->newInstanceWithoutConstructor();
+    $server = new McpServer($oauth, $tools, $content);
+    $dispatch = new ReflectionMethod($server, 'dispatch');
+
+    $known = $dispatch->invoke($server, 'initialize', ['protocolVersion' => '2025-06-18', 'capabilities' => [], 'clientInfo' => ['name' => 'test', 'version' => '1']], null, Util::uuid(), 'legacy');
+    $future = $dispatch->invoke($server, 'initialize', ['protocolVersion' => '2099-01-01'], null, Util::uuid(), 'legacy');
+    $suite->assertSame('2025-06-18', $known['protocolVersion']);
+    $suite->assertSame('2025-11-25', $future['protocolVersion']);
+    $suite->assertSame('{"tools":{},"resources":{},"prompts":{}}', Util::jsonEncode($known['capabilities']));
+});
+
+$suite->test('routing headers are optional but conflicting values fail closed', function () use ($suite): void {
+    $oauth = (new ReflectionClass(OAuth::class))->newInstanceWithoutConstructor();
+    $tools = (new ReflectionClass(ToolRouter::class))->newInstanceWithoutConstructor();
+    $content = (new ReflectionClass(ContentRegistry::class))->newInstanceWithoutConstructor();
+    $server = new McpServer($oauth, $tools, $content);
+    $validate = new ReflectionMethod($server, 'validateRoutingHeaders');
+    unset($_SERVER['HTTP_MCP_METHOD'], $_SERVER['HTTP_MCP_NAME']);
+    $validate->invoke($server, 'tools/list', []);
+    $_SERVER['HTTP_MCP_METHOD'] = 'resources/list';
+    try {
+        $suite->assertThrows(AppError::class, fn() => $validate->invoke($server, 'tools/list', []), 'header_mismatch');
+    } finally {
+        unset($_SERVER['HTTP_MCP_METHOD']);
+    }
+});
+
+$suite->test('wire shape wins when protocol versions disagree', function () use ($suite): void {
+    $oauth = (new ReflectionClass(OAuth::class))->newInstanceWithoutConstructor();
+    $tools = (new ReflectionClass(ToolRouter::class))->newInstanceWithoutConstructor();
+    $content = (new ReflectionClass(ContentRegistry::class))->newInstanceWithoutConstructor();
+    $server = new McpServer($oauth, $tools, $content);
+    $resolve = new ReflectionMethod($server, 'resolveProtocolProfile');
+
+    $_SERVER['HTTP_MCP_PROTOCOL_VERSION'] = '2026-07-28';
+    unset($_SERVER['HTTP_MCP_METHOD']);
+    $suite->assertSame('legacy', $resolve->invoke($server, 'tools/list', ['_meta' => ['io.modelcontextprotocol/protocolVersion' => '2025-11-25']]));
+    $_SERVER['HTTP_MCP_METHOD'] = 'tools/list';
+    $suite->assertSame('modern', $resolve->invoke($server, 'tools/list', ['_meta' => ['io.modelcontextprotocol/protocolVersion' => '2025-11-25']]));
+    unset($_SERVER['HTTP_MCP_PROTOCOL_VERSION'], $_SERVER['HTTP_MCP_METHOD']);
 });
 
 $suite->test('tool catalog stays compact and deterministic', function () use ($suite): void {
     /** @var ToolRouter $router */
     $router = (new ReflectionClass(ToolRouter::class))->newInstanceWithoutConstructor();
-    $names = array_column($router->definitions(), 'name');
+    $definitions = $router->definitions();
+    $names = array_column($definitions, 'name');
     $suite->assertSame(['lexware_search','lexware_get','lexware_write','lexware_file','lexware_finalize','lexware_delete'], $names);
+    $suite->assertTrue(!in_array('', array_column($definitions, 'title'), true));
 });
 
 $suite->test('voucher filters normalize comma-separated enums', function () use ($suite, $validator): void {
@@ -248,6 +298,8 @@ $suite->test('OAuth metadata exposes PKCE, rotation scopes, and the MCP resource
     $metadata = $oauth->authorizationServerMetadata();
     $resource = $oauth->protectedResourceMetadata();
     $suite->assertSame(['S256'], $metadata['code_challenge_methods_supported']);
+    $suite->assertSame(true, $metadata['authorization_response_iss_parameter_supported']);
+    $suite->assertSame(true, $metadata['client_id_metadata_document_supported']);
     $suite->assertSame(Config::resourceUrl(), $resource['resource']);
     $suite->assertTrue(in_array('lexware:finalize', $metadata['scopes_supported'], true));
 });

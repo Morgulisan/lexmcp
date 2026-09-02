@@ -6,7 +6,7 @@ namespace LexMcp;
 final class McpServer
 {
     private const SERVER_NAME = 'de.mopoliti.lexware-office';
-    private const SERVER_VERSION = '1.0.0';
+    private const SERVER_VERSION = '1.1.0';
 
     public function __construct(
         private readonly OAuth $oauth,
@@ -88,7 +88,6 @@ final class McpServer
     private function dispatch(string $method, array $params, ?array $subject, string $traceId, string $profile = 'modern'): array
     {
         if ($method === 'server/discover') {
-            Util::assertKeys($params, ['_meta']);
             return ['resultType' => 'complete', 'supportedVersions' => Config::supportedVersions(), 'capabilities' => ['tools' => (object) [], 'resources' => (object) [], 'prompts' => (object) []], 'instructions' => 'Select an account from lexware://accounts. Use read, write, finalize, and delete tools according to their separate safety boundaries.', 'ttlMs' => 300000, 'cacheScope' => 'public'];
         }
         if ($method === 'initialize') {
@@ -166,7 +165,6 @@ final class McpServer
 
     private function initialize(array $params): array
     {
-        Util::assertKeys($params, ['protocolVersion', 'capabilities', 'clientInfo', '_meta']);
         if (isset($params['capabilities']) && !is_array($params['capabilities'])) {
             throw new AppError('invalid_request', 'Client capabilities must be an object.', 400);
         }
@@ -176,7 +174,7 @@ final class McpServer
 
         $requested = is_string($params['protocolVersion'] ?? null) ? $params['protocolVersion'] : '';
         $legacyVersions = array_keys(array_filter(Config::protocolProfiles(), static fn(string $profile): bool => $profile === 'legacy'));
-        $selected = in_array($requested, $legacyVersions, true) ? $requested : ($legacyVersions[0] ?? '2025-11-25');
+        $selected = Config::wireProfile($requested) === 'legacy' ? $requested : ($legacyVersions[0] ?? '2025-11-25');
 
         return [
             'protocolVersion' => $selected,
@@ -214,6 +212,21 @@ final class McpServer
         if ($host !== '' && $expectedHost !== '' && !hash_equals($expectedHost, $host)) {
             throw new AppError('host_forbidden', 'Host header is not allowed.', 403);
         }
+    }
+
+    private function respondOptions(): void
+    {
+        $origin = Util::header('Origin');
+        if ($origin !== null && !in_array($origin, Config::allowedOrigins(), true)) {
+            throw new AppError('origin_forbidden', 'Origin is not allowed.', 403);
+        }
+        http_response_code(204);
+        $this->corsHeaders();
+        header('Allow: POST, OPTIONS');
+        header('Access-Control-Allow-Methods: POST, OPTIONS');
+        header('Access-Control-Allow-Headers: Authorization, Content-Type, MCP-Protocol-Version, Mcp-Method, Mcp-Name, Mcp-Session-Id');
+        header('Access-Control-Max-Age: 600');
+        header('Cache-Control: no-store');
     }
 
     private function validateEnvelope(array $request): void
@@ -258,6 +271,12 @@ final class McpServer
         $bodyVersion = $meta['io.modelcontextprotocol/protocolVersion'] ?? null;
 
         $profiles = Config::protocolProfiles();
+        if (Util::header('Mcp-Method') !== null) {
+            return 'modern';
+        }
+        if (is_string($header) && is_string($bodyVersion) && isset($profiles[$header], $profiles[$bodyVersion]) && $profiles[$header] !== $profiles[$bodyVersion]) {
+            return 'legacy';
+        }
         if (is_string($header) && isset($profiles[$header])) {
             return $profiles[$header];
         }
@@ -267,7 +286,7 @@ final class McpServer
 
         // Unknown or missing date versions are deliberately accepted. The modern
         // routing header is a better wire-format signal than the version string.
-        return Util::header('Mcp-Method') !== null ? 'modern' : 'legacy';
+        return 'legacy';
     }
 
     private function scope(array $subject, string $required): void
@@ -297,13 +316,33 @@ final class McpServer
     private function respond(array $body, int $status): void
     {
         http_response_code($status);
+        $this->corsHeaders();
         header('Content-Type: application/json; charset=utf-8');
         header('Cache-Control: no-store');
+        if ($status === 405) {
+            header('Allow: POST, OPTIONS');
+        }
         if ($status === 401) {
-            header('WWW-Authenticate: Bearer resource_metadata="' . Config::publicUrl() . '/.well-known/oauth-protected-resource"');
+            header('WWW-Authenticate: Bearer resource_metadata="' . Config::publicUrl() . '/.well-known/oauth-protected-resource", scope="accounts:read lexware:read content:read"');
         } elseif ($status === 403) {
             header('WWW-Authenticate: Bearer error="insufficient_scope", resource_metadata="' . Config::publicUrl() . '/.well-known/oauth-protected-resource"');
         }
         echo Util::jsonEncode($body);
+    }
+
+    private function respondEmpty(int $status): void
+    {
+        http_response_code($status);
+        $this->corsHeaders();
+        header('Cache-Control: no-store');
+    }
+
+    private function corsHeaders(): void
+    {
+        $origin = Util::header('Origin');
+        if ($origin !== null && in_array($origin, Config::allowedOrigins(), true)) {
+            header('Access-Control-Allow-Origin: ' . $origin);
+            header('Vary: Origin');
+        }
     }
 }

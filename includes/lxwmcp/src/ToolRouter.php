@@ -484,8 +484,17 @@ final class ToolRouter
     {
         $readOnly = in_array($name, ['lexware_search', 'lexware_get'], true);
         $destructive = in_array($name, ['lexware_finalize', 'lexware_delete'], true);
+        $titles = [
+            'lexware_search' => 'Search Lexware',
+            'lexware_get' => 'Get Lexware record',
+            'lexware_write' => 'Write Lexware data',
+            'lexware_file' => 'Process Lexware file',
+            'lexware_finalize' => 'Finalize Lexware action',
+            'lexware_delete' => 'Delete Lexware data',
+        ];
         return [
             'name' => $name,
+            'title' => $titles[$name] ?? $name,
             'description' => $description,
             'inputSchema' => ['type' => 'object', 'properties' => $properties, 'required' => $required, 'additionalProperties' => true],
             'outputSchema' => [

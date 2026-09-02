@@ -37,12 +37,13 @@ final class OAuth
             'code_challenge_methods_supported' => ['S256'],
             'token_endpoint_auth_methods_supported' => ['none'],
             'scopes_supported' => Config::scopes(),
+            'authorization_response_iss_parameter_supported' => true,
+            'client_id_metadata_document_supported' => true,
         ];
     }
 
     public function register(array $input): array
     {
-        Util::assertKeys($input, ['client_name', 'redirect_uris', 'token_endpoint_auth_method', 'grant_types', 'response_types', 'application_type', 'scope', 'client_uri', 'tos_uri', 'policy_uri', 'software_id', 'software_version']);
         $name = isset($input['client_name']) && is_string($input['client_name']) ? trim($input['client_name']) : 'MCP client';
         $redirects = $input['redirect_uris'] ?? null;
         if (!is_array($redirects) || $redirects === [] || count($redirects) > 10) {
@@ -139,7 +140,7 @@ final class OAuth
             $params['resource'], Util::jsonEncode($params['scopes']), $params['code_challenge'],
         ]);
         $this->deleteAuthorizationRequest($requestId);
-        $this->authorizationRedirect($params, ['code' => $code, 'iss' => Config::publicUrl()]);
+        $this->authorizationRedirect($params, ['code' => $code]);
     }
 
     public function token(array $post): array
@@ -536,6 +537,7 @@ final class OAuth
 
     private function authorizationRedirect(array $params, array $result): void
     {
+        $result['iss'] = Config::publicUrl();
         if (is_string($params['state'] ?? null)) {
             $result['state'] = $params['state'];
         }

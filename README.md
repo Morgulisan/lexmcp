@@ -2,7 +2,7 @@
 
 Abhängigkeitsfreier MCP-Server für die Lexware Office Public API in reinem PHP 8.4. Das Projekt verwendet weder Composer noch ein MCP-/OAuth-SDK oder Framework.
 
-Die Implementierung basiert auf der am 28. August 2026 aktuellen [Lexware-Public-API-Dokumentation](https://developers.lexware.io/docs/) und der [MCP-Spezifikation 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28).
+Die Implementierung basiert auf der am 28. August 2026 aktuellen [Lexware-Public-API-Dokumentation](https://developers.lexware.io/docs/) und unterstützt sowohl die MCP-Spezifikation 2026-07-28 als auch klassische Streamable-HTTP-Clients.
 
 ## Verzeichniszuordnung
 
@@ -53,9 +53,11 @@ MCP verwendet anschließend OAuth Authorization Code mit PKCE-S256. Metadaten st
 - `/.well-known/oauth-protected-resource`
 - `/.well-known/oauth-authorization-server`
 
+Die im MCP-Client einzutragende Serveradresse ist `https://lxwmcp.mopoliti.de/mcp`.
+
 Access-Tokens sind opaque, zehn Minuten gültig und nur als Bearer-Header zulässig. Refresh-Tokens gelten 30 Tage und rotieren bei jeder Verwendung.
 
-Unterstützte MCP-Versionen werden in `Config::VERIFIED_PROTOCOL_PROFILES` einem geprüften Wire-Profil zugeordnet. Die Umgebungsvariable kann nur daraus auswählen; eine unbekannte Zukunftsversion wird nie allein wegen ihres Datums akzeptiert. Eine bestätigte wire-kompatible Nachfolgeversion benötigt lediglich einen weiteren Registry-Eintrag.
+Unterstützte MCP-Versionen werden in `Config::VERIFIED_PROTOCOL_PROFILES` einem Wire-Profil zugeordnet. Der Server beherrscht die neue `server/discover`-Initialisierung und die klassische `initialize`-Initialisierung parallel. Fehlende, unbekannte oder voneinander abweichende Versionsangaben führen nicht allein zu einem Abbruch; der Server wählt anhand der Nachrichtenform das kompatibelste Profil. Widersprüchliche `Mcp-Method`- oder `Mcp-Name`-Header werden aus Sicherheitsgründen weiterhin abgelehnt.
 
 ## Tools
 

@@ -30,7 +30,7 @@ final class Application
                 (new McpServer($oauth, $tools, $content))->handle();
                 return;
             }
-            if ($path === '/.well-known/oauth-protected-resource') {
+            if (in_array($path, ['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected-resource/mcp'], true)) {
                 self::json($oauth->protectedResourceMetadata());
                 return;
             }

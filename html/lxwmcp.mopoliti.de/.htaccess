@@ -9,7 +9,7 @@ RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=308,L]
 
 # OAuth discovery deliberately uses dot paths. Route these two public metadata
 # documents before the generic hidden-file protection is evaluated.
-RewriteRule ^\.well-known/(oauth-protected-resource|oauth-authorization-server)$ index.php [END,QSA]
+RewriteRule ^\.well-known/(oauth-protected-resource(?:/mcp)?|oauth-authorization-server)$ index.php [END,QSA]
 
 # All other dot paths remain inaccessible.
 RewriteRule (^|/)\. - [F,L]
