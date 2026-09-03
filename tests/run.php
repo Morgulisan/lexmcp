@@ -52,7 +52,23 @@ $suite->test('ambiguous aliases require clarification', function () use ($suite)
 });
 
 $suite->test('unknown parameters are rejected', function () use ($suite, $aliases): void {
-    $suite->assertThrows(AppError::class, fn() => $aliases->normalizeParameters(['silentlyIgnored' => 1], ['page']), 'unknown_parameter');
+    try {
+        $aliases->normalizeParameters(['unsupportedFilter' => 'value'], ['page']);
+        throw new RuntimeException('Expected unknown_parameter to be thrown.');
+    } catch (AppError $e) {
+        $suite->assertSame('unknown_parameter', $e->errorCode);
+        $suite->assertSame('Unknown parameter "unsupportedFilter".', $e->getMessage());
+        $suite->assertSame('unsupportedFilter', $e->details['parameter']);
+        $suite->assertSame(['page'], $e->details['allowed']);
+    }
+});
+
+$suite->test('unknown parameter details survive MCP error sanitization', function () use ($suite): void {
+    /** @var McpServer $server */
+    $server = (new ReflectionClass(McpServer::class))->newInstanceWithoutConstructor();
+    $safeDetails = new ReflectionMethod($server, 'safeDetails');
+    $details = $safeDetails->invoke($server, ['parameter' => 'unsupportedFilter', 'allowed' => ['page'], 'secret' => 'hidden']);
+    $suite->assertSame(['parameter' => 'unsupportedFilter', 'allowed' => ['page']], $details);
 });
 
 $suite->test('pagination validation honors endpoint maximum', function () use ($suite, $validator): void {
@@ -194,6 +210,7 @@ $suite->test('tool catalog stays compact and deterministic', function () use ($s
     $names = array_column($definitions, 'name');
     $suite->assertSame(['lexware_search','lexware_get','lexware_write','lexware_file','lexware_finalize','lexware_delete'], $names);
     $suite->assertTrue(!in_array('', array_column($definitions, 'title'), true));
+    $suite->assertTrue(str_contains($definitions[0]['inputSchema']['properties']['parameters']['description'], 'voucherStatus'));
 });
 
 $suite->test('voucher filters normalize comma-separated enums', function () use ($suite, $validator): void {

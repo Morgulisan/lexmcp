@@ -21,8 +21,12 @@ final class ToolRouter
     public function definitions(): array
     {
         $common = ['account' => ['type' => 'string', 'description' => 'Configured Lexware account alias.']];
+        $searchParameters = [
+            'type' => 'object',
+            'description' => 'Allowed filters by entity. vouchers: voucherType and voucherStatus (required), archived, contactId, voucherDateFrom, voucherDateTo, createdDateFrom, createdDateTo, updatedDateFrom, updatedDateTo, voucherNumber, page, size, sort. contacts: email, name, number, customer, vendor, page, size, sort. articles: articleNumber, gtin, type, page, size, sort.',
+        ];
         return [
-            $this->definition('lexware_search', 'Search contacts, articles, or vouchers with explicit pagination.', $common + ['entity' => ['type' => 'string'], 'parameters' => ['type' => 'object']], ['account','entity']),
+            $this->definition('lexware_search', 'Search contacts, articles, or vouchers with entity-specific filters and explicit pagination.', $common + ['entity' => ['type' => 'string', 'enum' => ['contacts','articles','vouchers']], 'parameters' => $searchParameters], ['account','entity']),
             $this->definition('lexware_get', 'Get one Lexware resource, reference list, payment, file status, or operation status.', $common + ['entity' => ['type' => 'string'], 'id' => ['type' => 'string'], 'parameters' => ['type' => 'object']], ['account','entity']),
             $this->definition('lexware_write', 'Create or update a contact, article, bookkeeping voucher, invoice draft, or credit-note draft.', $common + ['operation' => ['type' => 'string'], 'id' => ['type' => 'string'], 'parameters' => ['type' => 'object'], 'idempotency_key' => ['type' => 'string']], ['account','operation','parameters','idempotency_key']),
             $this->definition('lexware_file', 'Upload one supported file as a new voucher or attach it to an existing voucher.', $common + ['operation' => ['type' => 'string'], 'voucher_id' => ['type' => 'string'], 'source' => ['type' => 'object'], 'idempotency_key' => ['type' => 'string']], ['account','operation','source','idempotency_key']),

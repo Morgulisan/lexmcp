@@ -316,7 +316,7 @@ final class McpServer
 
     private function safeDetails(array $details): array
     {
-        $allowed = ['candidates','allowed','field','required_scope','supportedVersions','lexware_status','operation','detected_mime'];
+        $allowed = ['candidates','allowed','parameter','parameters','field','required_scope','supportedVersions','lexware_status','operation','detected_mime'];
         return array_intersect_key($details, array_flip($allowed));
     }
 

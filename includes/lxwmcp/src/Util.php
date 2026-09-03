@@ -120,7 +120,9 @@ final class Util
     {
         $unknown = array_values(array_diff(array_keys($input), $allowed));
         if ($unknown !== []) {
-            throw new AppError('unknown_parameter', 'Unknown parameter.', 400, false, ['context' => $context, 'parameters' => $unknown]);
+            $label = count($unknown) === 1 ? 'Unknown parameter ' : 'Unknown parameters ';
+            $names = implode(', ', array_map([self::class, 'jsonEncode'], $unknown));
+            throw new AppError('unknown_parameter', $label . $names . '.', 400, false, ['context' => $context, 'parameters' => $unknown, 'allowed' => $allowed]);
         }
     }
 }

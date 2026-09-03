@@ -48,13 +48,19 @@ final class AliasResolver
         $result = [];
         foreach ($parameters as $name => $value) {
             if (!is_string($name)) {
-                throw new AppError('unknown_parameter', 'Parameter names must be strings.', 400);
+                throw new AppError('unknown_parameter', 'Unknown parameter ' . Util::jsonEncode($name) . '; parameter names must be strings.', 400, false, ['parameter' => $name, 'allowed' => $allowed]);
             }
             try {
                 $canonical = $this->parameterName($name, $allowed);
             } catch (AppError $e) {
                 if ($e->errorCode === 'unknown_value') {
-                    throw new AppError('unknown_parameter', 'Unknown parameter.', 400, false, ['parameter' => $name, 'allowed' => $allowed]);
+                    throw new AppError(
+                        'unknown_parameter',
+                        'Unknown parameter ' . Util::jsonEncode($name) . '.',
+                        400,
+                        false,
+                        ['parameter' => $name, 'allowed' => $allowed],
+                    );
                 }
                 throw $e;
             }
