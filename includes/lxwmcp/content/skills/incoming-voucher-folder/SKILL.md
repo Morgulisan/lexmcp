@@ -2,7 +2,7 @@
 name: incoming-voucher-folder
 title: Lokalen Eingangsbeleg-Ordner verarbeiten
 description: Agenten-Skill für sichere, resumierbare PDF-Uploads und benutzergeführte Buchung.
-version: 1.1.0
+version: 1.2.0
 ---
 
 # Lokalen Eingangsbeleg-Ordner verarbeiten
@@ -16,5 +16,7 @@ Berechne Größe und SHA-256 erst für die endgültige Upload-Datei. Rufe `lexwa
 Nach bestätigtem Empfang verwende `upload_voucher` mit `source: {kind: "upload", upload_id}` und einem stabilen Idempotenzschlüssel aus Account-Alias und SHA-256. Zum Anhängen verwende `attach_to_voucher` mit zusätzlicher `voucher_id`. Wiederhole eine Übertragung nur mit denselben Bytes; wiederhole eine Belegoperation nur mit demselben Schlüssel. Bei unklarem Ergebnis zuerst `lexware_get` mit `entity: "operation_status"` verwenden. Speichere `upload_id`, Idempotenzschlüssel, `voucherId` und `fileId` zur Wiederaufnahme.
 
 Nutze `lexware_describe`, um Operationen, Enums oder Berechtigungsblocker zu klären. Fehlt dem Client eine lokale HTTP-Upload-Möglichkeit, melde diese Einschränkung; lasse große Dateien nicht ersatzweise als Base64 durch den Modellkontext laufen.
+
+Lege für eine vorliegende Datei nicht zuerst oder zusätzlich einen Beleg über `voucher_create` an. `upload_voucher` liefert bereits die zu verwendende `voucherId`. Fehlt einem bereits angelegten Beleg ein PDF, verwende nach eindeutiger Ermittlung seiner UUID `attach_to_voucher` statt einer zweiten Belegerstellung. Im bereits beauftragten Ablauf bei eindeutigem Zielbeleg und passender Datei ohne zusätzliche Benutzerbestätigung fortfahren. Prüfe danach durch erneutes Lesen, ob die Datei zugeordnet ist. Die Sperre von `voucher_update` bei `unchecked`-Belegen betrifft nicht den separaten Datei-Anhängeweg.
 
 OCR-Ergebnisse dürfen als Vorschlag dienen. Fehlende Pflichtwerte, mehrdeutige Kontakte oder Buchungskategorien erfordern Benutzerklärung. Finalisiere nur, wenn der Benutzer dies für den Lauf angeordnet hat und jede Datei eindeutig validiert ist. Isoliere Fehler pro Datei, setze sichere übrige Dateien fort und berichte abschließend gebuchte, offene und fehlgeschlagene Dateien getrennt.

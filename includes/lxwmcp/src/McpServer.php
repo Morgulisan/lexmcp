@@ -6,7 +6,7 @@ namespace LexMcp;
 final class McpServer
 {
     private const SERVER_NAME = 'de.mopoliti.lexware-office';
-    private const SERVER_VERSION = '1.3.0';
+    private const SERVER_VERSION = '1.3.1';
 
     public function __construct(
         private readonly OAuth $oauth,

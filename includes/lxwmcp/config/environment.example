@@ -18,8 +18,10 @@ LEXMCP_LEXWARE_BASE_URL=https://api.lexware.io
 LEXMCP_PROTOCOL_VERSIONS=2026-07-28,2025-11-25,2025-06-18,2025-03-26,2024-11-05
 LEXMCP_ALLOWED_ORIGINS=https://lxwmcp.mopoliti.de
 
-# Kommagetrennte HTTPS-Hosts; leer deaktiviert URL-Uploads.
-LEXMCP_REMOTE_FILE_HOSTS=
+# Kommagetrennte HTTPS-Hosts; explizit leer deaktiviert URL-Uploads.
+# Ohne Variable gilt diese Standardliste. Eigene Listen ersetzen den Standard.
+# *.domain erlaubt Subdomains, nicht die Hauptdomain; *crm erlaubt auch Präfixe vor crm.
+LEXMCP_REMOTE_FILE_HOSTS=drive.google.com,*.mopoliti.de,*.sldo.de,*.tecis.de,*crm.vertrieb-plattform.de
 
 # Finalisieren wird pro Benutzer unter /accounts gesteuert (Standard: an).
 # LEXMCP_ENABLE_FINALIZE wird nicht mehr ausgewertet. Verbindungsrechte bleiben nötig.

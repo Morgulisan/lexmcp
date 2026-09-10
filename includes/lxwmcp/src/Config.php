@@ -101,8 +101,24 @@ final class Config
 
     public static function remoteFileHosts(): array
     {
-        $raw = self::env('LEXMCP_REMOTE_FILE_HOSTS', '');
+        $configured = getenv('LEXMCP_REMOTE_FILE_HOSTS');
+        $raw = $configured === false ? 'drive.google.com,*.mopoliti.de,*.sldo.de,*.tecis.de,*crm.vertrieb-plattform.de' : $configured;
         return array_values(array_filter(array_map(static fn(string $v): string => strtolower(trim($v)), explode(',', $raw))));
+    }
+
+    public static function remoteFileHostAllowed(string $host): bool
+    {
+        $host = strtolower($host);
+        if (filter_var($host, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) === false) return false;
+        foreach (self::remoteFileHosts() as $pattern) {
+            if ($host === $pattern) return true;
+            // Only a leading wildcard is supported; the rest is a literal suffix.
+            if (str_starts_with($pattern, '*') && strlen($pattern) > 1) {
+                $suffix = substr($pattern, 1);
+                if (str_ends_with($host, $suffix)) return true;
+            }
+        }
+        return false;
     }
 
     public static function fileTransferInclude(): string

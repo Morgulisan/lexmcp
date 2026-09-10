@@ -28,7 +28,7 @@ final class ToolRouter
         $definitions = [
             $this->definition('lexware_search', 'Search contacts, articles, or vouchers with entity-specific filters and explicit pagination.', $common + ['entity' => ['type' => 'string', 'enum' => ['contacts','articles','vouchers']], 'parameters' => $searchParameters], ['account','entity']),
             $this->definition('lexware_get', 'Get one Lexware resource, reference list, payment, file status, or operation status.', $common + ['entity' => ['type' => 'string'], 'id' => ['type' => 'string'], 'parameters' => ['type' => 'object']], ['account','entity']),
-            $this->definition('lexware_write', 'Create or update a contact, article, bookkeeping voucher, invoice draft, or credit-note draft.', $common + ['operation' => ['type' => 'string'], 'id' => ['type' => 'string'], 'parameters' => ['type' => 'object'], 'idempotency_key' => ['type' => 'string']], ['account','operation','parameters','idempotency_key']),
+            $this->definition('lexware_write', 'Create or update a contact, article, bookkeeping voucher, invoice draft, or credit-note draft. For a new voucher with a PDF use lexware_file upload_voucher first. To add a document to an existing voucher, use lexware_file attach_to_voucher instead of voucher_update.', $common + ['operation' => ['type' => 'string'], 'id' => ['type' => 'string'], 'parameters' => ['type' => 'object'], 'idempotency_key' => ['type' => 'string']], ['account','operation','parameters','idempotency_key']),
             $this->definition('lexware_file', 'Use prepare_upload with source filename, mime_type, size_bytes and sha256; PUT local bytes to the returned URL, then upload_voucher or attach_to_voucher with source kind upload and upload_id. Limit: 4500000 bytes. Only voucher operations require idempotency_key.', $common + ['operation' => ['type' => 'string', 'enum' => ['prepare_upload','upload_voucher','attach_to_voucher']], 'voucher_id' => ['type' => 'string'], 'source' => $this->fileSourceSchema(), 'idempotency_key' => ['type' => 'string']], ['account','operation','source']),
             $this->definition('lexware_finalize', 'Perform a separately authorized final or bookkeeping action.', $common + ['operation' => ['type' => 'string'], 'id' => ['type' => 'string'], 'parameters' => ['type' => 'object'], 'confirm' => ['type' => 'boolean'], 'idempotency_key' => ['type' => 'string']], ['account','operation','parameters','confirm','idempotency_key']),
             $this->definition('lexware_delete', 'Perform only a documented and separately authorized deletion.', $common + ['operation' => ['type' => 'string'], 'id' => ['type' => 'string'], 'parameters' => ['type' => 'object'], 'confirm' => ['type' => 'boolean'], 'idempotency_key' => ['type' => 'string']], ['account','operation','id','confirm','idempotency_key']),
@@ -145,7 +145,7 @@ final class ToolRouter
             if ($class === 'file') $operations = [
                 'prepare_upload' => ['required_source_fields' => ['filename','mime_type','size_bytes','sha256'], 'requires_idempotency_key' => false],
                 'upload_voucher' => ['source_schema' => $this->fileSourceSchema(), 'requires_idempotency_key' => true],
-                'attach_to_voucher' => ['source_schema' => $this->fileSourceSchema(), 'requires_idempotency_key' => true, 'requires_voucher_id' => true],
+                'attach_to_voucher' => ['description' => 'Attach a missing document to an existing bookkeeping voucher through the separate file endpoint; the voucher_update restriction on unchecked vouchers does not apply to this MCP operation. Read the voucher afterwards to verify the file association.', 'source_schema' => $this->fileSourceSchema(), 'requires_idempotency_key' => true, 'requires_voucher_id' => true, 'requires_confirmation' => false],
             ];
             $catalog[$name] = ['required_scope' => $scope, 'available' => $blockers === [], 'blockers' => $blockers, 'input_schema' => $tool['inputSchema'], 'operations' => $operations];
         }
@@ -440,7 +440,7 @@ final class ToolRouter
                     throw new AppError('invalid_voucher_state', 'Only an unchecked bookkeeping voucher can be booked through this operation.', 409);
                 }
                 if ($class === 'write' && in_array($existing['voucherStatus'] ?? null, ['blank','unchecked'], true)) {
-                    throw new AppError('finalize_required', 'Blank and unchecked vouchers cannot be changed through lexware_write; use the OCR workflow and lexware_finalize.', 409);
+                    throw new AppError('finalize_required', 'Blank and unchecked voucher fields cannot be changed through lexware_write. To add a missing document, use lexware_file with attach_to_voucher and the existing voucher_id; do not create another voucher or finalize merely to attach a file.', 409, false, [], 'For an already authorized receipt-processing task with an unambiguous file and voucher, prepare and PUT the file, call lexware_file attach_to_voucher with the existing voucher_id, then read the voucher to verify its files. No additional user confirmation is required for attachment. For bookkeeping field changes, follow the OCR and separately authorized finalization workflow.');
                 }
                 if ($class === 'write' && isset($params['voucherStatus']) && ($existing['voucherStatus'] ?? null) !== $params['voucherStatus']) {
                     throw new AppError('invalid_voucher_state', 'lexware_write cannot change a voucher status.', 409);
@@ -557,7 +557,7 @@ final class ToolRouter
     {
         $parts = parse_url($url);
         $host = is_array($parts) ? strtolower((string) ($parts['host'] ?? '')) : '';
-        if (($parts['scheme'] ?? '') !== 'https' || !in_array($host, Config::remoteFileHosts(), true) || isset($parts['user']) || isset($parts['pass']) || (($parts['port'] ?? 443) !== 443)) {
+        if (($parts['scheme'] ?? '') !== 'https' || !Config::remoteFileHostAllowed($host) || isset($parts['user']) || isset($parts['pass']) || (($parts['port'] ?? 443) !== 443)) {
             throw new AppError('remote_source_forbidden', 'Remote file host is not allowed.', 400);
         }
         $records = dns_get_record($host, DNS_A | DNS_AAAA);

@@ -127,6 +127,8 @@ Der MCP-Server sieht das lokale Dateisystem des Agenten nicht. Der Agent liest e
 
 Der passende Agenten-Skill ist als `skill://lexware/incoming-voucher-folder/SKILL.md` abrufbar.
 
+Bei vorhandenem PDF zuerst `upload_voucher` nutzen und mit dessen `voucherId` weiterarbeiten. Bereits vorhandenen Belegen lässt sich über `attach_to_voucher` eine Datei zuordnen; dies verwendet einen anderen Endpunkt als die gesperrte Änderung von `unchecked`-Belegfeldern. Im beauftragten Ablauf bei eindeutiger Zuordnung ohne zusätzliche Benutzerbestätigung fortfahren. Nach dem Anhängen die Dateizuordnung erneut lesen und prüfen. Fehlermeldung, `lexware_describe` und Skill weisen den Agenten auf diesen Reparaturweg hin.
+
 ### Gemeinsame MST-Speicherung und Deployment
 
 Die Speicherimplementierung liegt ausschließlich im Schwesterprojekt unter `MST/includes/libs/FileTransfer/Storage.php`. Zuerst diese Komponente und den darauf umgestellten MST-PdfTransfer-Endpunkt bereitstellen, anschließend LexMCP einschließlich Migration `004_uploads_user_settings.sql`. Der bestehende MST-Endpunkt und alte Abrufpasswörter bleiben kompatibel; das MST-Limit steigt von 2,5 MiB auf 4.500.000 Bytes.
@@ -203,6 +205,6 @@ Die Integrationstests verwenden ausschließlich eine separate Testdatenbank. Der
 - Lexware-Keys: XChaCha20-Poly1305 mit zugehöriger Account-ID.
 - Rate-Key: separater HMAC, keine Key-Ableitung aus dem Ciphertext.
 - Logs: feste Allowlist; keine Header, Bodies, Dateien, URLs mit Query, PII oder Secrets.
-- Remote-Dateien: HTTPS, Host-Allowlist, öffentliche DNS-Adressen, keine Redirects, maximal 4.500.000 Bytes (4,5 MB).
+- Remote-Dateien: HTTPS, Host-Allowlist, öffentliche DNS-Adressen, keine Redirects, maximal 4.500.000 Bytes (4,5 MB). Ohne `LEXMCP_REMOTE_FILE_HOSTS` sind `drive.google.com`, `*.mopoliti.de`, `*.sldo.de`, `*.tecis.de` und `*crm.vertrieb-plattform.de` erlaubt. `*.domain` umfasst beliebig tiefe Subdomains, nicht die Hauptdomain; `*crm.vertrieb-plattform.de` umfasst auch `crm.vertrieb-plattform.de` und Hostnamen mit Präfix vor `crm`. Wildcards sind ausschließlich am Anfang zulässig; eine gesetzte Liste ersetzt diesen Standard, ein explizit leerer Wert deaktiviert URL-Uploads. Bei bestehender Konfiguration die gewünschten Standardfreigaben zur kommagetrennten Liste hinzufügen. Die URL muss ohne Anmeldung direkt Dateibytes liefern; Vorschau-, Anmelde- und Weiterleitungsseiten lassen sich damit nicht importieren. In diesem Fall die Datei lokal herunterladen und `prepare_upload` verwenden.
 - OAuth und kritische Aktionen: getrennte Scopes und technische Schalter.
 - Dauerhafte Sicherheits- und Queuezustände: MySQL, nicht `/data`.
