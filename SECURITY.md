@@ -10,7 +10,9 @@ Sicherheitsprobleme dürfen keine API-Keys, Tokens, Belege oder personenbezogene
 
 ## Kritische Operationen
 
-Finalisieren und Löschen bleiben ohne explizite Serverfreigabe deaktiviert. Eine Freigabe ersetzt weder OAuth-Scope noch `confirm:true`.
+Finalisieren wird pro Benutzer unter `/accounts` gesteuert (Standard: an). Die Einstellung ersetzt weder die Verbindungsberechtigung `lexware:finalize` noch `confirm:true`. Löschen bleibt ohne explizite Serverfreigabe deaktiviert.
+
+Datei-Uploads verwenden kurzlebige, an Benutzer, Verbindung und Account gebundene Tokens im Header. Nur Token-Hashes werden gespeichert. Die gemeinsame MST-Komponente speichert Dateien außerhalb des Webroots; Lexware und MST verwenden getrennte Verzeichnisse. Upload-Header und Abrufpasswörter niemals protokollieren.
 
 ## Unterstützte Meldungen
 

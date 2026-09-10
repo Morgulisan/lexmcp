@@ -18,26 +18,64 @@ final class ToolRouter
         $this->endpoints = require Config::endpointFile();
     }
 
-    public function definitions(): array
+    public function definitions(?array $scopes = null, ?int $userId = null): array
     {
         $common = ['account' => ['type' => 'string', 'description' => 'Configured Lexware account alias.']];
         $searchParameters = [
             'type' => 'object',
             'description' => 'Allowed filters by entity. vouchers: voucherType and voucherStatus (required), archived, contactId, voucherDateFrom, voucherDateTo, createdDateFrom, createdDateTo, updatedDateFrom, updatedDateTo, voucherNumber, page, size, sort. contacts: email, name, number, customer, vendor, page, size, sort. articles: articleNumber, gtin, type, page, size, sort.',
         ];
-        return [
+        $definitions = [
             $this->definition('lexware_search', 'Search contacts, articles, or vouchers with entity-specific filters and explicit pagination.', $common + ['entity' => ['type' => 'string', 'enum' => ['contacts','articles','vouchers']], 'parameters' => $searchParameters], ['account','entity']),
             $this->definition('lexware_get', 'Get one Lexware resource, reference list, payment, file status, or operation status.', $common + ['entity' => ['type' => 'string'], 'id' => ['type' => 'string'], 'parameters' => ['type' => 'object']], ['account','entity']),
             $this->definition('lexware_write', 'Create or update a contact, article, bookkeeping voucher, invoice draft, or credit-note draft.', $common + ['operation' => ['type' => 'string'], 'id' => ['type' => 'string'], 'parameters' => ['type' => 'object'], 'idempotency_key' => ['type' => 'string']], ['account','operation','parameters','idempotency_key']),
-            $this->definition('lexware_file', 'Upload one supported file as a new voucher or attach it to an existing voucher.', $common + ['operation' => ['type' => 'string'], 'voucher_id' => ['type' => 'string'], 'source' => ['type' => 'object'], 'idempotency_key' => ['type' => 'string']], ['account','operation','source','idempotency_key']),
+            $this->definition('lexware_file', 'Use prepare_upload with source filename, mime_type, size_bytes and sha256; PUT local bytes to the returned URL, then upload_voucher or attach_to_voucher with source kind upload and upload_id. Limit: 4500000 bytes. Only voucher operations require idempotency_key.', $common + ['operation' => ['type' => 'string', 'enum' => ['prepare_upload','upload_voucher','attach_to_voucher']], 'voucher_id' => ['type' => 'string'], 'source' => $this->fileSourceSchema(), 'idempotency_key' => ['type' => 'string']], ['account','operation','source']),
             $this->definition('lexware_finalize', 'Perform a separately authorized final or bookkeeping action.', $common + ['operation' => ['type' => 'string'], 'id' => ['type' => 'string'], 'parameters' => ['type' => 'object'], 'confirm' => ['type' => 'boolean'], 'idempotency_key' => ['type' => 'string']], ['account','operation','parameters','confirm','idempotency_key']),
             $this->definition('lexware_delete', 'Perform only a documented and separately authorized deletion.', $common + ['operation' => ['type' => 'string'], 'id' => ['type' => 'string'], 'parameters' => ['type' => 'object'], 'confirm' => ['type' => 'boolean'], 'idempotency_key' => ['type' => 'string']], ['account','operation','id','confirm','idempotency_key']),
         ];
+        $definitions[] = $this->definition('lexware_describe', 'Describe supported operations, required fields, enum values, limits and current permission blockers. Optional tool and operation filters.', ['tool' => ['type' => 'string'], 'operation' => ['type' => 'string']], []);
+        foreach ($definitions as &$definition) {
+            $class = substr($definition['name'], strlen('lexware_'));
+            if (!isset($this->endpoints[$class])) continue;
+            $selector = in_array($class, ['get','search'], true) ? 'entity' : 'operation';
+            $operations = array_keys($this->endpoints[$class]);
+            if ($class === 'get') $operations[] = 'operation_status';
+            $definition['inputSchema']['properties'][$selector]['enum'] = $operations;
+            $definition['inputSchema']['properties']['parameters']['description'] = ($definition['inputSchema']['properties']['parameters']['description'] ?? '') . ' Operation-specific fields; use lexware_describe for required fields and enum values.';
+            $branches = [];
+            foreach ($operations as $operation) {
+                $parameters = $this->parameterSchema($operation, $this->endpoints[$class][$operation] ?? []);
+                $branches[] = ['properties' => [$selector => ['enum' => [$operation]], 'parameters' => $parameters], 'required' => $parameters['required'] === [] ? [$selector] : [$selector, 'parameters']];
+            }
+            $definition['inputSchema']['anyOf'] = $branches;
+        }
+        unset($definition);
+        if ($scopes === null) {
+            return $definitions;
+        }
+        return array_values(array_filter($definitions, fn(array $definition): bool => $this->isAvailable((string) $definition['name'], $scopes, $userId)));
+    }
+
+    public function isAvailable(string $tool, array $scopes, ?int $userId = null): bool
+    {
+        $required = match ($tool) {
+            'lexware_search', 'lexware_get', 'lexware_describe' => 'lexware:read',
+            'lexware_write', 'lexware_file' => 'lexware:write',
+            'lexware_finalize' => 'lexware:finalize',
+            'lexware_delete' => 'lexware:delete',
+            default => null,
+        };
+        if ($required === null || !in_array($required, $scopes, true)) {
+            return false;
+        }
+        return ($tool !== 'lexware_finalize' || ($userId !== null && (new UserSettings($this->pdo))->finalizeEnabled($userId)))
+            && ($tool !== 'lexware_delete' || Config::deleteEnabled());
     }
 
     public function call(string $tool, array $arguments, array $subject, string $traceId): array
     {
-        return match ($tool) {
+        try { return match ($tool) {
+            'lexware_describe' => $this->describe($arguments, $subject, $traceId),
             'lexware_search' => $this->search($arguments, $subject, $traceId),
             'lexware_get' => $this->get($arguments, $subject, $traceId),
             'lexware_write' => $this->write($arguments, $subject, $traceId),
@@ -45,7 +83,130 @@ final class ToolRouter
             'lexware_finalize' => $this->finalize($arguments, $subject, $traceId),
             'lexware_delete' => $this->delete($arguments, $subject, $traceId),
             default => throw new AppError('tool_not_found', 'Unknown MCP tool.', 404, false, ['tool' => $tool]),
-        };
+        }; } catch (AppError $e) {
+            $operation = $arguments['operation'] ?? $arguments['entity'] ?? $tool;
+            if (!is_string($operation)) $operation = $tool;
+            $operation = substr($operation, 0, 128);
+            throw new AppError($e->errorCode, $operation . ': ' . $e->getMessage(), $e->httpStatus, $e->retryable, $e->details + ['operation' => $operation], $e->suggestedAction);
+        }
+    }
+
+    private function parameterSchema(string $operation, array $definition): array
+    {
+        $fields = $definition['parameters'] ?? $definition['fields'] ?? [];
+        $required = $definition['required'] ?? [];
+        if ($operation === 'voucher_book') $required = array_values(array_diff($required, ['voucherStatus']));
+        if ($operation === 'operation_status') $fields = $required = ['operation','idempotency_key'];
+        if ($operation === 'voucher_file_remove') $fields = $required = ['fileId'];
+        $properties = [];
+        foreach ($fields as $field) {
+            $properties[$field] = ['description' => $field];
+            if (isset($definition['enums'][$field])) $properties[$field] = ['type' => 'string', 'enum' => $definition['enums'][$field]];
+            if (isset($definition['enumLists'][$field])) $properties[$field] = ['type' => 'string', 'description' => 'Comma-separated values: ' . implode(', ', $definition['enumLists'][$field])];
+        }
+        return ['type' => 'object', 'properties' => (object) $properties, 'required' => $required, 'additionalProperties' => true];
+    }
+
+    private function fileSourceSchema(): array
+    {
+        $metadata = ['filename' => ['type' => 'string'], 'mime_type' => ['type' => 'string', 'enum' => UploadStore::MIME_TYPES], 'sha256' => ['type' => 'string', 'pattern' => '^[a-fA-F0-9]{64}$']];
+        return ['anyOf' => [
+            ['type' => 'object', 'properties' => $metadata + ['size_bytes' => ['type' => 'integer', 'minimum' => 1, 'maximum' => UploadStore::MAX_BYTES]], 'required' => ['filename','mime_type','sha256','size_bytes'], 'additionalProperties' => false],
+            ['type' => 'object', 'properties' => ['kind' => ['type' => 'string', 'enum' => ['upload']], 'upload_id' => ['type' => 'string']], 'required' => ['kind','upload_id'], 'additionalProperties' => false],
+            ['type' => 'object', 'properties' => $metadata + ['kind' => ['type' => 'string', 'enum' => ['base64']], 'content_base64' => ['type' => 'string']], 'required' => ['kind','filename','mime_type','sha256','content_base64'], 'additionalProperties' => false],
+            ['type' => 'object', 'properties' => $metadata + ['kind' => ['type' => 'string', 'enum' => ['https']], 'url' => ['type' => 'string']], 'required' => ['kind','filename','mime_type','sha256','url'], 'additionalProperties' => false],
+        ]];
+    }
+
+    private function describe(array $raw, array $subject, string $traceId): array
+    {
+        $this->requireScope($subject, 'lexware:read');
+        $args = $this->envelope($raw, ['tool','operation']);
+        $catalog = [];
+        foreach ($this->definitions() as $tool) {
+            $name = $tool['name'];
+            $class = substr($name, strlen('lexware_'));
+            $scope = match ($class) { 'write','file' => 'lexware:write', 'finalize' => 'lexware:finalize', 'delete' => 'lexware:delete', default => 'lexware:read' };
+            $blockers = [];
+            if (!in_array($scope, $subject['scopes'], true)) $blockers[] = 'missing_connection_scope:' . $scope;
+            if ($class === 'finalize' && !(new UserSettings($this->pdo))->finalizeEnabled((int) $subject['user_id'])) $blockers[] = 'user_finalize_disabled';
+            if ($class === 'delete' && !Config::deleteEnabled()) $blockers[] = 'server_delete_disabled';
+            $operations = [];
+            foreach ($this->endpoints[$class] ?? [] as $operation => $definition) {
+                $required = $definition['required'] ?? [];
+                if ($operation === 'voucher_book') $required = array_values(array_diff($required, ['voucherStatus']));
+                $operations[$operation] = ['fields' => $definition['parameters'] ?? $definition['fields'] ?? [], 'required_parameters' => $required, 'enums' => $definition['enums'] ?? [], 'nested_enums' => Validator::nestedEnums($definition), 'comma_separated_enums' => $definition['enumLists'] ?? [], 'requires_id' => $definition['id'] ?? false, 'requires_confirmation' => in_array($class, ['finalize','delete'], true), 'requires_idempotency_key' => in_array($class, ['write','finalize','delete'], true)];
+            }
+            if ($class === 'get') $operations['operation_status'] = ['required_parameters' => ['operation','idempotency_key']];
+            if ($class === 'delete' && isset($operations['voucher_file_remove'])) {
+                $operations['voucher_file_remove']['fields'] = ['fileId'];
+                $operations['voucher_file_remove']['required_parameters'] = ['fileId'];
+            }
+            if ($class === 'file') $operations = [
+                'prepare_upload' => ['required_source_fields' => ['filename','mime_type','size_bytes','sha256'], 'requires_idempotency_key' => false],
+                'upload_voucher' => ['source_schema' => $this->fileSourceSchema(), 'requires_idempotency_key' => true],
+                'attach_to_voucher' => ['source_schema' => $this->fileSourceSchema(), 'requires_idempotency_key' => true, 'requires_voucher_id' => true],
+            ];
+            $catalog[$name] = ['required_scope' => $scope, 'available' => $blockers === [], 'blockers' => $blockers, 'input_schema' => $tool['inputSchema'], 'operations' => $operations];
+        }
+        if (isset($args['tool'])) {
+            $name = Util::requireString($args, 'tool', 96);
+            if (!isset($catalog[$name])) throw new AppError('unknown_value', 'tool must be one of: ' . implode(', ', array_keys($catalog)), 400, false, ['field' => 'tool', 'allowed' => array_keys($catalog)]);
+            $catalog = [$name => $catalog[$name]];
+        }
+        if (isset($args['operation'])) {
+            $operation = Util::requireString($args, 'operation', 128);
+            $allowed = [];
+            foreach ($catalog as $name => &$entry) {
+                $allowed = array_merge($allowed, array_keys($entry['operations']));
+                if (!isset($entry['operations'][$operation])) { unset($catalog[$name]); continue; }
+                $entry['operations'] = [$operation => $entry['operations'][$operation]];
+            }
+            unset($entry);
+            if ($catalog === []) throw new AppError('unknown_value', 'operation must be one of: ' . implode(', ', $allowed), 400, false, ['field' => 'operation', 'allowed' => $allowed]);
+        }
+        return $this->success($traceId, '', 'describe', ['tools' => $catalog, 'max_file_size_bytes' => UploadStore::MAX_BYTES, 'mime_types' => UploadStore::MIME_TYPES, 'upload_authorization_seconds' => 900, 'file_ttl_seconds' => 3660]);
+    }
+
+    private function stagedFile(array $subject, array $account, string $alias, string $operation, string $key, ?string $voucherId, string $uploadId, string $traceId): array
+    {
+        $uploads = new UploadStore($this->pdo);
+        $meta = $uploads->claim($uploadId, $subject, $account, $operation, $key, $voucherId);
+        $guard = $this->idempotency->begin($subject['user_id'], $account['id'], $operation, $key, ['voucher_id' => $voucherId, 'filename' => $meta['filename'], 'sha256' => $meta['sha256']]);
+        if (!$guard['new']) {
+            $this->cleanupUpload($uploads, $uploadId, $traceId);
+            return $this->success($traceId, $alias, $operation, $guard['result'], ['idempotent_replay' => true]);
+        }
+        $temp = false;
+        $apiKey = null;
+        try {
+            $directory = Config::dataPath() . '/tmp';
+            if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) throw new AppError('temporary_storage_error', 'Cannot create working directory.', 500);
+            $temp = tempnam($directory, 'lxmcp-');
+            if ($temp === false) throw new AppError('temporary_storage_error', 'Cannot create working file.', 500);
+            chmod($temp, 0600);
+            $uploads->copyTo($uploadId, $temp);
+            $apiKey = $this->accounts->apiKey($account);
+            $path = $operation === 'upload_voucher' ? '/v1/files' : '/v1/vouchers/' . rawurlencode($voucherId) . '/files';
+            $response = $this->client->upload($account, $apiKey, $path, $temp, $meta['filename'], $meta['mime_type'], $operation === 'upload_voucher');
+            if (!is_array($response->data) || $response->data === []) throw new AppError('lexware_uncertain_response', 'Lexware returned no usable upload result.', 502);
+            $result = $response->data + ['sha256' => $meta['sha256']];
+            $this->idempotency->complete($subject['user_id'], $account['id'], $operation, $key, $result);
+        } catch (AppError $e) {
+            $this->recordMutationError($e, $subject['user_id'], $account['id'], $operation, $key);
+            throw $e;
+        } finally {
+            if (is_string($apiKey)) sodium_memzero($apiKey);
+            if (is_string($temp) && is_file($temp)) unlink($temp);
+        }
+        $this->cleanupUpload($uploads, $uploadId, $traceId);
+        return $this->success($traceId, $alias, $operation, $result);
+    }
+
+    private function cleanupUpload(UploadStore $uploads, string $uploadId, string $traceId): void
+    {
+        try { $uploads->delete($uploadId); }
+        catch (\Throwable $e) { SafeLogger::log('upload_cleanup_error', ['trace_id' => $traceId, 'error_code' => 'cleanup_pending']); }
     }
 
     public function readFileResource(string $uri, array $subject): array
@@ -114,8 +275,8 @@ final class ToolRouter
 
     private function finalize(array $raw, array $subject, string $traceId): array
     {
-        if (!Config::finalizeEnabled()) {
-            throw new AppError('finalize_disabled', 'Finalize operations are disabled by server configuration.', 403);
+        if (!(new UserSettings($this->pdo))->finalizeEnabled((int) $subject['user_id'])) {
+            throw new AppError('finalize_disabled', 'Finalizing is disabled in your user settings at /accounts.', 403);
         }
         $args = $this->envelope($raw, ['account','operation','id','parameters','confirm','idempotency_key']);
         $this->requireScope($subject, 'lexware:finalize');
@@ -189,19 +350,27 @@ final class ToolRouter
     {
         $args = $this->envelope($raw, ['account','operation','voucher_id','source','idempotency_key']);
         $this->requireScope($subject, 'lexware:write');
-        $operation = $this->aliases->resolve('operations', Util::requireString($args, 'operation', 128), ['upload_voucher','attach_to_voucher']);
+        $operation = $this->aliases->resolve('operations', Util::requireString($args, 'operation', 128), ['prepare_upload','upload_voucher','attach_to_voucher']);
         $source = $args['source'] ?? null;
         if (!is_array($source)) {
             throw new AppError('validation_error', 'source must be an object.', 400);
         }
-        $source = $this->aliases->normalizeParameters($source, ['kind','filename','mime_type','content_base64','url','sha256']);
-        $source['kind'] = $this->aliases->enum(Util::requireString($source, 'kind', 16), ['base64','https']);
         $accountAlias = Util::requireString($args, 'account', 96);
         $account = $this->accounts->getForUser($subject['user_id'], $accountAlias);
+        if ($operation === 'prepare_upload') {
+            $source = $this->aliases->normalizeParameters($source, ['filename','mime_type','size_bytes','sha256']);
+            return $this->success($traceId, $accountAlias, $operation, (new UploadStore($this->pdo))->prepare($subject, $account, $source));
+        }
+        $source = $this->aliases->normalizeParameters($source, ['kind','filename','mime_type','content_base64','url','sha256','upload_id']);
+        $source['kind'] = $this->aliases->enum(Util::requireString($source, 'kind', 16), ['base64','https','upload'], 'source.kind');
         $key = $this->validator->idempotencyKey($args['idempotency_key'] ?? null);
         $voucherId = null;
         if ($operation === 'attach_to_voucher') {
             $voucherId = $this->validator->uuid(Util::requireString($args, 'voucher_id', 64), 'voucher_id');
+        }
+        if ($source['kind'] === 'upload') {
+            Util::assertKeys($source, ['kind','upload_id']);
+            return $this->stagedFile($subject, $account, $accountAlias, $operation, $key, $voucherId, Util::requireString($source, 'upload_id', 36), $traceId);
         }
         [$temp, $filename, $hash, $mimeType] = $this->materializeSource($source);
         try {
@@ -359,8 +528,8 @@ final class ToolRouter
                 throw new AppError('unknown_value', 'source.kind must be base64 or https.', 400);
             }
             $size = filesize($temp);
-            if (!is_int($size) || $size < 1 || $size > 5242880) {
-                throw new AppError('file_size_invalid', 'File must be between 1 byte and 5 MB.', 400);
+            if (!is_int($size) || $size < 1 || $size > UploadStore::MAX_BYTES) {
+                throw new AppError('file_size_invalid', 'File must be between 1 and 4500000 bytes (4.5 MB).', 400);
             }
             $actualMime = $this->detectMime($temp);
             $declared = strtolower(Util::requireString($source, 'mime_type', 128));
@@ -407,7 +576,12 @@ final class ToolRouter
         $pinnedIp = str_contains($ips[0], ':') ? '[' . $ips[0] . ']' : $ips[0];
         $handle = fopen($temp, 'wb');
         $ch = curl_init($url);
-        curl_setopt_array($ch, [CURLOPT_FILE => $handle, CURLOPT_FOLLOWLOCATION => false, CURLOPT_CONNECTTIMEOUT => 5, CURLOPT_TIMEOUT => 30, CURLOPT_PROTOCOLS => CURLPROTO_HTTPS, CURLOPT_MAXFILESIZE => 5242880, CURLOPT_RESOLVE => [$host . ':443:' . $pinnedIp]]);
+        $received = 0;
+        curl_setopt_array($ch, [CURLOPT_WRITEFUNCTION => static function ($curl, string $chunk) use ($handle, &$received): int {
+            $received += strlen($chunk);
+            if ($received > UploadStore::MAX_BYTES) return 0;
+            return fwrite($handle, $chunk) ?: 0;
+        }, CURLOPT_FOLLOWLOCATION => false, CURLOPT_CONNECTTIMEOUT => 5, CURLOPT_TIMEOUT => 30, CURLOPT_PROTOCOLS => CURLPROTO_HTTPS, CURLOPT_MAXFILESIZE => UploadStore::MAX_BYTES, CURLOPT_RESOLVE => [$host . ':443:' . $pinnedIp]]);
         $ok = curl_exec($ch);
         $status = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
         $error = curl_errno($ch);
@@ -481,12 +655,13 @@ final class ToolRouter
     private function success(string $traceId, string $account, string $action, mixed $data, array $extra = [], array $contentExtra = []): array
     {
         $structured = ['ok' => true, 'request_id' => $traceId, 'account' => $account, 'action' => $action, 'data' => $data] + $extra;
-        return ['resultType' => 'complete', 'content' => array_merge([['type' => 'text', 'text' => "Lexware operation {$action} completed."]], $contentExtra), 'structuredContent' => $structured, 'isError' => false];
+        $text = in_array($action, ['prepare_upload','describe'], true) ? Util::jsonEncode($data) : "Lexware operation {$action} completed.";
+        return ['resultType' => 'complete', 'content' => array_merge([['type' => 'text', 'text' => $text]], $contentExtra), 'structuredContent' => $structured, 'isError' => false];
     }
 
     private function definition(string $name, string $description, array $properties, array $required): array
     {
-        $readOnly = in_array($name, ['lexware_search', 'lexware_get'], true);
+        $readOnly = in_array($name, ['lexware_search', 'lexware_get', 'lexware_describe'], true);
         $destructive = in_array($name, ['lexware_finalize', 'lexware_delete'], true);
         $titles = [
             'lexware_search' => 'Search Lexware',
@@ -507,7 +682,7 @@ final class ToolRouter
                 'required' => ['ok', 'request_id'],
                 'additionalProperties' => true,
             ],
-            'annotations' => ['readOnlyHint' => $readOnly, 'destructiveHint' => $destructive, 'idempotentHint' => $readOnly || in_array($name, ['lexware_file'], true), 'openWorldHint' => true],
+            'annotations' => ['readOnlyHint' => $readOnly, 'destructiveHint' => $destructive, 'idempotentHint' => $readOnly, 'openWorldHint' => true],
         ];
     }
 }

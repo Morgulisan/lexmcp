@@ -178,17 +178,36 @@ final class OAuth
         if ($token === null) {
             throw new AppError('invalid_token', 'A bearer access token is required.', 401);
         }
-        $stmt = $this->pdo->prepare("SELECT user_id,client_id,resource,scopes_json FROM lxmcp_oauth_tokens WHERE token_hash=? AND token_type='access' AND revoked_at IS NULL AND expires_at > NOW(6)");
+        $stmt = $this->pdo->prepare(
+            "SELECT t.user_id,t.client_id,t.resource,t.family_id,t.scopes_json,c.allowed_scopes_json "
+            . "FROM lxmcp_oauth_tokens t JOIN lxmcp_oauth_connections c ON c.id=t.family_id AND c.user_id=t.user_id "
+            . "WHERE t.token_hash=? AND t.token_type='access' AND t.revoked_at IS NULL AND t.expires_at > NOW(6) AND c.revoked_at IS NULL"
+        );
         $stmt->execute([Util::tokenHash($token)]);
         $row = $stmt->fetch(PDO::FETCH_ASSOC);
         if (!is_array($row) || !hash_equals(Config::resourceUrl(), (string) $row['resource'])) {
             throw new AppError('invalid_token', 'The access token is invalid, expired, or has the wrong audience.', 401);
         }
-        $scopes = json_decode((string) $row['scopes_json'], true);
-        if (!is_array($scopes) || ($requiredScope !== null && !in_array($requiredScope, $scopes, true))) {
+        $tokenScopes = json_decode((string) $row['scopes_json'], true);
+        $allowedScopes = json_decode((string) $row['allowed_scopes_json'], true);
+        if (!is_array($tokenScopes) || !is_array($allowedScopes)) {
+            throw new AppError('invalid_token', 'Stored MCP connection permissions are invalid.', 401);
+        }
+        $scopes = array_values(array_intersect(Config::scopes(), $tokenScopes, $allowedScopes));
+        if ($requiredScope !== null && !in_array($requiredScope, $scopes, true)) {
             throw new AppError('insufficient_scope', 'The access token does not grant the required scope.', 403, false, ['required_scope' => $requiredScope]);
         }
-        return ['user_id' => (int) $row['user_id'], 'client_id' => $row['client_id'], 'scopes' => $scopes];
+        return ['user_id' => (int) $row['user_id'], 'client_id' => $row['client_id'], 'connection_id' => $row['family_id'], 'scopes' => $scopes];
+    }
+
+    public function listConnections(int $userId): array
+    {
+        return (new ConnectionStore($this->pdo))->listForUser($userId);
+    }
+
+    public function updateConnection(int $userId, string $id, string $name, array $scopes): void
+    {
+        (new ConnectionStore($this->pdo))->update($userId, $id, $name, $scopes);
     }
 
     public function currentWebUser(): ?int
@@ -373,7 +392,23 @@ final class OAuth
                 throw new AppError('invalid_grant', 'PKCE verification failed.', 400);
             }
             $this->pdo->prepare('UPDATE lxmcp_oauth_codes SET used_at=NOW(6) WHERE code_hash=?')->execute([Util::tokenHash($code)]);
-            $tokens = $this->issueTokens((int) $row['user_id'], $clientId, $resource, json_decode((string) $row['scopes_json'], true), Util::uuid());
+            $scopes = json_decode((string) $row['scopes_json'], true);
+            if (!is_array($scopes)) {
+                throw new AppError('invalid_grant', 'Stored OAuth scopes are invalid.', 400);
+            }
+            $family = Util::uuid();
+            $clientNameStmt = $this->pdo->prepare('SELECT client_name FROM lxmcp_oauth_clients WHERE client_id=?');
+            $clientNameStmt->execute([$clientId]);
+            $clientName = $clientNameStmt->fetchColumn();
+            $connectionName = is_string($clientName) && trim($clientName) !== '' ? $clientName : $clientId;
+            (new ConnectionStore($this->pdo))->create(
+                (int) $row['user_id'],
+                $family,
+                $clientId,
+                mb_substr($connectionName, 0, 96),
+                $scopes,
+            );
+            $tokens = $this->issueTokens((int) $row['user_id'], $clientId, $resource, $scopes, $family);
             $this->pdo->commit();
             return $tokens;
         } catch (\Throwable $e) {
@@ -391,8 +426,18 @@ final class OAuth
         $resource = self::canonicalResource($post['resource'] ?? null);
         $this->pdo->beginTransaction();
         try {
+            $tokenHash = Util::tokenHash($token);
+            // Discover the family first, then lock connection -> token. The web
+            // permission editor uses the same order, avoiding a lock inversion.
+            $stmt = $this->pdo->prepare("SELECT * FROM lxmcp_oauth_tokens WHERE token_hash=? AND token_type='refresh'");
+            $stmt->execute([$tokenHash]);
+            $row = $stmt->fetch(PDO::FETCH_ASSOC);
+            if (!is_array($row)) {
+                throw new AppError('invalid_grant', 'Refresh token is invalid or expired.', 400);
+            }
+            $scopes = (new ConnectionStore($this->pdo))->allowedScopes((string) $row['family_id'], (int) $row['user_id'], true);
             $stmt = $this->pdo->prepare("SELECT * FROM lxmcp_oauth_tokens WHERE token_hash=? AND token_type='refresh' FOR UPDATE");
-            $stmt->execute([Util::tokenHash($token)]);
+            $stmt->execute([$tokenHash]);
             $row = $stmt->fetch(PDO::FETCH_ASSOC);
             if (!is_array($row)) {
                 throw new AppError('invalid_grant', 'Refresh token is invalid or expired.', 400);
@@ -406,11 +451,7 @@ final class OAuth
                 || !hash_equals((string) $row['client_id'], $clientId) || !hash_equals((string) $row['resource'], $resource)) {
                 throw new AppError('invalid_grant', 'Refresh token is invalid or expired.', 400);
             }
-            $this->pdo->prepare('UPDATE lxmcp_oauth_tokens SET used_at=NOW(6),revoked_at=NOW(6) WHERE token_hash=?')->execute([Util::tokenHash($token)]);
-            $scopes = json_decode((string) $row['scopes_json'], true);
-            if (!is_array($scopes)) {
-                throw new AppError('invalid_grant', 'Stored OAuth scopes are invalid.', 400);
-            }
+            $this->pdo->prepare('UPDATE lxmcp_oauth_tokens SET used_at=NOW(6),revoked_at=NOW(6) WHERE token_hash=?')->execute([$tokenHash]);
             if (isset($post['scope'])) {
                 if (!is_string($post['scope'])) {
                     throw new AppError('invalid_scope', 'scope must be a string.', 400);
@@ -654,7 +695,7 @@ final class OAuth
         header('Content-Type: text/html; charset=utf-8');
         header("Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; form-action 'self'" . ($formAction !== null ? ' ' . $formAction : ''));
         header('X-Content-Type-Options: nosniff');
-        echo '<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>' . self::h($title) . '</title><style>body{font:16px system-ui;max-width:720px;margin:3rem auto;padding:0 1rem;color:#18212b}label{display:block;margin:1rem 0}input{display:block;width:100%;box-sizing:border-box;padding:.6rem}button{padding:.7rem 1rem;margin:.5rem .5rem .5rem 0}</style><body>' . $body . '</body></html>';
+        echo '<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>' . self::h($title) . '</title><style>body{font:16px system-ui;max-width:760px;margin:3rem auto;padding:0 1rem;color:#18212b}label{display:block;margin:1rem 0}input:not([type=checkbox]){display:block;width:100%;box-sizing:border-box;padding:.6rem}input[type=checkbox]{margin-right:.4rem}button{padding:.7rem 1rem;margin:.5rem .5rem .5rem 0}table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:.55rem;border-bottom:1px solid #d8dee4}.connection{border:1px solid #d8dee4;border-radius:.5rem;padding:1rem;margin:1rem 0}.permission{margin:.55rem 0}.muted{color:#66717d;font-size:.9rem}fieldset{border:0;padding:0;margin:1rem 0}legend{font-weight:600}</style><body>' . $body . '</body></html>';
     }
 
     public static function h(string $value): string

@@ -97,28 +97,51 @@ Unterstützte MCP-Versionen werden in `Config::VERIFIED_PROTOCOL_PROFILES` einem
 ## Tools
 
 - `lexware_search`: Kontakte, Artikel und Voucherlist; explizite Pagination.
+- `lexware_describe`: Operationen, Pflichtfelder, Enums und aktuelle Berechtigungsblocker; optional `tool` und `operation` filtern, kein Account erforderlich.
 - `lexware_get`: Details, Zahlungen, Kategorien, Referenzdaten, OCR-Status und sichere Download-ResourceLinks.
 - `lexware_write`: Kontakte, Artikel, Buchhaltungsbelege sowie Rechnungs- und Gutschriftentwürfe.
-- `lexware_file`: einzelner Upload als Base64 oder über einen freigegebenen HTTPS-Host.
+- `lexware_file`: Upload vorbereiten, Datei direkt per HTTP-PUT übertragen und Upload-ID verwenden; Base64 und freigegebene HTTPS-Hosts bleiben unterstützt.
 - `lexware_finalize`: Buchung `unchecked -> open` oder finale Rechnung/Gutschrift.
 - `lexware_delete`: dokumentiertes Löschen von Artikeln oder einzelnen Voucher-Dateien.
 
 Jeder Lexware-Aufruf verlangt den Account-Alias. API-Keys sind niemals Tool-Parameter.
 
-`lexware_finalize` und `lexware_delete` sind standardmäßig deaktiviert. Für ihre Verwendung sind gleichzeitig der jeweilige OAuth-Scope, `confirm:true` und die passende Servervariable erforderlich.
+### Verbindungen und Berechtigungen
+
+Ein MCP-Harness legt beim OAuth-Verbindungsaufbau mit dem Parameter `scope` fest, welche Berechtigungen es anfragt. Nach der Freigabe wird jede Tokenfamilie als eigene, benennbare Verbindung geführt. Unter `/accounts` kann der angemeldete Benutzer den Anzeigenamen und die tatsächlich erlaubten Scopes per Checkbox ändern. Die aktuelle Freigabe wird bei jedem Request aus der Datenbank gelesen und gilt daher sofort auch für bereits ausgestellte Access-Tokens.
+
+`tools/list` enthält nur Tools, deren Scope für diese Verbindung aktuell freigegeben ist. `lexware_search` und `lexware_get` benötigen `lexware:read`, `lexware_write` und `lexware_file` benötigen `lexware:write`; Finalisieren und Löschen verwenden ihre jeweils eigenen Scopes. Ein ausgeblendetes Tool wird auch bei einem direkten `tools/call` abgewiesen. Tool-Listen werden mit `ttlMs: 0` ausgeliefert, damit Hosts Änderungen nicht weiterverwenden.
+
+`lexware_finalize` wird durch „Belege finalisieren und verbuchen erlauben“ unter `/accounts` pro Benutzer gesteuert. Standard für neue und bestehende Benutzer ist **an**; `LEXMCP_ENABLE_FINALIZE` wird nicht mehr ausgewertet. Ausschalten sperrt neue Aufrufe sofort, laufende Buchungen werden nicht rückgängig gemacht. Verbindungsrecht `lexware:finalize` und `confirm:true` bleiben erforderlich; bestehende Verbindungsrechte werden nicht erweitert. `lexware_delete` bleibt zusätzlich durch `LEXMCP_ENABLE_DELETE` geschützt. `lexware_describe` benötigt `lexware:read` und erklärt auch ausgeblendete Tools.
 
 ## Lokale PDF-Ordner
 
 Der MCP-Server sieht das lokale Dateisystem des Agenten nicht. Der Agent liest einen vom Benutzer freigegebenen Ordner und sendet jede Datei einzeln mit `lexware_file`. Empfohlener Ablauf:
 
 1. Account eindeutig festlegen.
-2. PDF lesen und SHA-256 berechnen.
-3. Mit stabilem Idempotenzschlüssel hochladen.
+2. PDFs über 1.000.000 Bytes möglichst lokal verlustfrei komprimieren. Original, Signaturen und eingebettete Rechnungsdaten erhalten. Größe und SHA-256 der endgültigen Datei berechnen; maximal 4.500.000 Bytes.
+3. `lexware_file` mit `prepare_upload` und `source: {filename, mime_type, size_bytes, sha256}` aufrufen. Datei aus der lokalen Laufzeit per PUT mit den zurückgegebenen Headern an `url` übertragen. Danach `upload_voucher` mit `source: {kind: "upload", upload_id}` und stabilem Idempotenzschlüssel ausführen. Für `attach_to_voucher` zusätzlich `voucher_id` angeben.
 4. `file_status` oder Voucher-Detail bis zum Ende der OCR abfragen.
 5. Erkannte Daten, Kontakt und Buchungskategorie mit der Benutzervorgabe prüfen.
 6. Nur bei entsprechender Anweisung über `lexware_finalize` buchen.
 
 Der passende Agenten-Skill ist als `skill://lexware/incoming-voucher-folder/SKILL.md` abrufbar.
+
+### Gemeinsame MST-Speicherung und Deployment
+
+Die Speicherimplementierung liegt ausschließlich im Schwesterprojekt unter `MST/includes/libs/FileTransfer/Storage.php`. Zuerst diese Komponente und den darauf umgestellten MST-PdfTransfer-Endpunkt bereitstellen, anschließend LexMCP einschließlich Migration `004_uploads_user_settings.sql`. Der bestehende MST-Endpunkt und alte Abrufpasswörter bleiben kompatibel; das MST-Limit steigt von 2,5 MiB auf 4.500.000 Bytes.
+
+`LEXMCP_FILE_TRANSFER_INCLUDE` zeigt auf die gemeinsame Datei, im Serverlayout `/includes/libs/FileTransfer/Storage.php`. Es wird keine Kopie in LexMCP benötigt. Lexware speichert privat unter `LEXMCP_DATA_PATH/uploads`, MST weiterhin unter `/data/pdf_transfer`. Beide Verzeichnisse müssen für PHP schreibbar sein. PHP, Apache und vorgeschaltete Proxies müssen PUT sowie 4.500.000 Bytes Binärdaten zulassen; `post_max_size=11M` und `upload_max_filesize=5M` decken auch MST-Multipart-Uploads ab.
+
+Upload-URLs gehören zur Lexware-Domain; der geheime Token wird über `X-Upload-Token` gesendet und nur gehasht gespeichert. Keine Upload-Header protokollieren. Berechtigung: 900 Sekunden, an Benutzer, Verbindung, Account und Dateimetadaten gebunden. Die Dateigültigkeit beginnt beim Empfang und beträgt 3.660 Sekunden; identische Übertragungswiederholungen verlängern sie nicht. Nach erfolgreicher Lexware-Weitergabe wird die Datei gelöscht. Operations- und Upload-Zuordnungen bleiben für sichere Wiederholungen erhalten.
+
+Zusätzlich zur Bereinigung bei Zugriffen den gemeinsamen Aufruf regelmäßig, beispielsweise alle fünf Minuten, serverseitig einrichten:
+
+```sh
+php /includes/libs/FileTransfer/cleanup.php /data/pdf_transfer /data/lxwmcp/uploads
+```
+
+Beide Verzeichnisse vorher mit privaten Zugriffsrechten anlegen. Abgelaufene Dateien sind sofort nicht mehr abrufbar; die physische Entfernung erfolgt beim nächsten Bereinigungslauf. `prepare_upload` benötigt keinen Idempotenzschlüssel und reserviert noch keinen Lexware-Beleg. Eine erneut vorbereitete URL ersetzt keinen unklaren Belegvorgang: dafür stets zuerst `operation_status` mit dem ursprünglichen Schlüssel abfragen.
 
 ## Aliase und Validierung
 
@@ -180,6 +203,6 @@ Die Integrationstests verwenden ausschließlich eine separate Testdatenbank. Der
 - Lexware-Keys: XChaCha20-Poly1305 mit zugehöriger Account-ID.
 - Rate-Key: separater HMAC, keine Key-Ableitung aus dem Ciphertext.
 - Logs: feste Allowlist; keine Header, Bodies, Dateien, URLs mit Query, PII oder Secrets.
-- Remote-Dateien: HTTPS, Host-Allowlist, öffentliche DNS-Adressen, keine Redirects, maximal 5 MB.
+- Remote-Dateien: HTTPS, Host-Allowlist, öffentliche DNS-Adressen, keine Redirects, maximal 4.500.000 Bytes (4,5 MB).
 - OAuth und kritische Aktionen: getrennte Scopes und technische Schalter.
 - Dauerhafte Sicherheits- und Queuezustände: MySQL, nicht `/data`.

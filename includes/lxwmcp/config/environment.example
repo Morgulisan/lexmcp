@@ -4,6 +4,7 @@ LEXMCP_PUBLIC_URL=https://lxwmcp.mopoliti.de
 
 # Bestehende Datei; nicht in dieses Projekt kopieren.
 LEXMCP_DATABASE_INCLUDE=/includes/api/sql.php
+LEXMCP_FILE_TRANSFER_INCLUDE=/includes/libs/FileTransfer/Storage.php
 
 # Optional. Ohne Umgebungsvariable wird der jeweilige Schlüssel einmalig im
 # privaten LEXMCP_DATA_PATH erzeugt und dauerhaft gespeichert.
@@ -20,6 +21,6 @@ LEXMCP_ALLOWED_ORIGINS=https://lxwmcp.mopoliti.de
 # Kommagetrennte HTTPS-Hosts; leer deaktiviert URL-Uploads.
 LEXMCP_REMOTE_FILE_HOSTS=
 
-# Kritische Funktionen erst nach bewusster Prüfung aktivieren.
-LEXMCP_ENABLE_FINALIZE=false
+# Finalisieren wird pro Benutzer unter /accounts gesteuert (Standard: an).
+# LEXMCP_ENABLE_FINALIZE wird nicht mehr ausgewertet. Verbindungsrechte bleiben nötig.
 LEXMCP_ENABLE_DELETE=false

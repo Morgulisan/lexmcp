@@ -90,10 +90,6 @@ final class LexwareClient
             $contentType = (string) curl_getinfo($ch, CURLINFO_CONTENT_TYPE);
             curl_close($ch);
             if ($error !== 0 || !is_string($body)) {
-                if ($attempts < 3) {
-                    $this->jitter($attempts);
-                    continue;
-                }
                 throw new AppError('lexware_transport_error', 'The Lexware upload result is unknown.', 502, false);
             }
             $data = $body === '' ? null : $this->decodeBody($body, $contentType);
@@ -107,7 +103,7 @@ final class LexwareClient
             if ($status < 200 || $status >= 300) {
                 throw new AppError('lexware_api_error', $this->safeErrorMessage($data, $status), $status === 429 ? 503 : 502, $status === 429, ['lexware_status' => $status]);
             }
-            if (!is_array($data)) {
+            if (!is_array($data) || $data === []) {
                 throw new AppError('lexware_uncertain_response', 'Lexware accepted the upload but returned no usable operation result.', 502, false, ['lexware_status' => $status]);
             }
             return $response;

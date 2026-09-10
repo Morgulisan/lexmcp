@@ -6,7 +6,7 @@ namespace LexMcp;
 final class McpServer
 {
     private const SERVER_NAME = 'de.mopoliti.lexware-office';
-    private const SERVER_VERSION = '1.1.1';
+    private const SERVER_VERSION = '1.3.0';
 
     public function __construct(
         private readonly OAuth $oauth,
@@ -100,7 +100,7 @@ final class McpServer
         }
         return match ($method) {
             'ping' => ['resultType' => 'complete'],
-            'tools/list' => ['resultType' => 'complete', 'tools' => $this->tools->definitions(), 'ttlMs' => 300000, 'cacheScope' => 'private'],
+            'tools/list' => ['resultType' => 'complete', 'tools' => $this->tools->definitions($subject['scopes'], (int) $subject['user_id']), 'ttlMs' => 0, 'cacheScope' => 'private'],
             'tools/call' => $this->callTool($params, $subject, $traceId),
             'resources/list' => $this->listResources($params, $subject),
             'resources/templates/list' => $this->listResourceTemplates($params, $subject),
@@ -120,6 +120,9 @@ final class McpServer
     {
         Util::assertKeys($params, ['name','arguments','_meta']);
         $name = Util::requireString($params, 'name', 128);
+        if (!$this->tools->isAvailable($name, $subject['scopes'], (int) $subject['user_id'])) {
+            throw new AppError('tool_not_found', 'Unknown or unavailable MCP tool. Use lexware_describe to inspect permissions and user settings.', 404, false, ['tool' => $name]);
+        }
         $arguments = $params['arguments'] ?? [];
         if (!is_array($arguments)) {
             throw new AppError('validation_error', 'Tool arguments must be an object.', 400);

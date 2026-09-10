@@ -105,9 +105,9 @@ final class Config
         return array_values(array_filter(array_map(static fn(string $v): string => strtolower(trim($v)), explode(',', $raw))));
     }
 
-    public static function finalizeEnabled(): bool
+    public static function fileTransferInclude(): string
     {
-        return Util::envBool('LEXMCP_ENABLE_FINALIZE');
+        return self::env('LEXMCP_FILE_TRANSFER_INCLUDE', dirname(__DIR__, 2) . '/libs/FileTransfer/Storage.php');
     }
 
     public static function deleteEnabled(): bool

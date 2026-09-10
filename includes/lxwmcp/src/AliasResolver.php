@@ -16,7 +16,7 @@ final class AliasResolver
         $this->aliases = Util::jsonDecode($json);
     }
 
-    public function resolve(string $namespace, string $input, array $allowed): string
+    public function resolve(string $namespace, string $input, array $allowed, ?string $field = null): string
     {
         $needle = Util::normalizeName($input);
         $matches = [];
@@ -35,7 +35,8 @@ final class AliasResolver
         if (count($matches) > 1) {
             throw new AppError('alias_ambiguous', 'The alias has more than one possible meaning.', 400, false, ['candidates' => $matches], 'Choose one canonical value.');
         }
-        throw new AppError('unknown_value', 'Unknown value.', 400, false, ['allowed' => $allowed]);
+        $field ??= match ($namespace) { 'operations' => 'operation', 'entities' => 'entity', 'parameters' => 'parameters', default => 'value' };
+        throw new AppError('unknown_value', $field . ' must be one of: ' . implode(', ', $allowed) . '.', 400, false, ['field' => $field, 'allowed' => $allowed]);
     }
 
     public function parameterName(string $input, array $allowed): string
@@ -56,7 +57,7 @@ final class AliasResolver
                 if ($e->errorCode === 'unknown_value') {
                     throw new AppError(
                         'unknown_parameter',
-                        'Unknown parameter ' . Util::jsonEncode($name) . '.',
+                        'Unknown parameter ' . Util::jsonEncode($name) . '. Allowed parameters: ' . implode(', ', $allowed) . '.',
                         400,
                         false,
                         ['parameter' => $name, 'allowed' => $allowed],
@@ -72,8 +73,8 @@ final class AliasResolver
         return $result;
     }
 
-    public function enum(string $value, array $allowed): string
+    public function enum(string $value, array $allowed, string $field = 'value'): string
     {
-        return $this->resolve('enums', $value, $allowed);
+        return $this->resolve('enums', $value, $allowed, $field);
     }
 }

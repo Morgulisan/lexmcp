@@ -14,7 +14,7 @@ foreach (['pdo_mysql', 'curl', 'json', 'sodium', 'mbstring'] as $extension) {
 $source = __DIR__ . '/src/';
 foreach ([
     'AppError.php', 'Util.php', 'Config.php', 'SafeLogger.php', 'Migrator.php', 'Crypto.php',
-    'AccountStore.php', 'OAuth.php', 'AliasResolver.php', 'Validator.php',
+    'AccountStore.php', 'ConnectionStore.php', 'UserSettings.php', 'UploadStore.php', 'OAuth.php', 'AliasResolver.php', 'Validator.php',
     'RateLimiter.php', 'LexwareClient.php', 'IdempotencyStore.php',
     'ContentRegistry.php', 'ToolRouter.php', 'McpServer.php', 'Application.php',
 ] as $file) {

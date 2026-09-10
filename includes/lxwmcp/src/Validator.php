@@ -5,6 +5,26 @@ namespace LexMcp;
 
 final class Validator
 {
+    private const NESTED_ENUMS = [
+        'price.leadingPrice' => ['NET','GROSS'],
+        'taxConditions.taxType' => ['gross','net','vatfree','intraCommunitySupply','constructionService13b','externalService13b','thirdPartyCountryService','thirdPartyCountryDelivery','photovoltaicEquipment'],
+        'taxConditions.taxSubType' => ['distanceSales','electronicServices'],
+        'lineItems[].type' => ['custom','material','service','text'],
+        'shippingConditions.shippingType' => ['service','serviceperiod','delivery','deliveryperiod','none'],
+        'totalPrice.currency' => ['EUR'],
+        'language' => ['de','en'],
+    ];
+
+    public static function nestedEnums(array $definition): array
+    {
+        if (($definition['sales'] ?? false) === true) {
+            $fields = $definition['fields'] ?? [];
+            return array_filter(self::NESTED_ENUMS, static fn(string $path): bool => in_array(str_replace('[]', '', explode('.', $path)[0]), $fields, true), ARRAY_FILTER_USE_KEY);
+        }
+        if (($definition['article'] ?? false) === true) return ['price.leadingPrice' => self::NESTED_ENUMS['price.leadingPrice']];
+        return [];
+    }
+
     public function __construct(private readonly AliasResolver $aliases) {}
 
     public function parameters(array $raw, array $definition): array
@@ -36,7 +56,7 @@ final class Validator
             if (!is_string($params[$field])) {
                 throw new AppError('validation_error', "{$field} must be a string enum value.", 400, false, ['field' => $field]);
             }
-            $params[$field] = $this->aliases->enum($params[$field], $values);
+            $params[$field] = $this->aliases->enum($params[$field], $values, 'parameters.' . $field);
         }
         foreach ($definition['enumLists'] ?? [] as $field => $values) {
             if (!array_key_exists($field, $params)) {
@@ -47,7 +67,7 @@ final class Validator
             }
             $normalized = [];
             foreach (explode(',', $params[$field]) as $item) {
-                $normalized[] = $this->aliases->enum(trim($item), $values);
+                $normalized[] = $this->aliases->enum(trim($item), $values, 'parameters.' . $field);
             }
             $params[$field] = implode(',', array_values(array_unique($normalized)));
         }
@@ -139,7 +159,7 @@ final class Validator
             throw new AppError('validation_error', 'lineItems may contain at most 300 entries.', 400, false, ['field' => 'lineItems']);
         }
         if (isset($params['price']['leadingPrice']) && is_string($params['price']['leadingPrice'])) {
-            $params['price']['leadingPrice'] = $this->aliases->enum($params['price']['leadingPrice'], ['NET','GROSS']);
+            $params['price']['leadingPrice'] = $this->aliases->enum($params['price']['leadingPrice'], self::NESTED_ENUMS['price.leadingPrice'], 'parameters.price.leadingPrice');
         }
         if (isset($params['paymentConditions']['paymentDiscountConditions'])) {
             $discount = $params['paymentConditions']['paymentDiscountConditions'];
@@ -382,21 +402,21 @@ final class Validator
             }
         }
 
-        $taxTypes = ['gross','net','vatfree','intraCommunitySupply','constructionService13b','externalService13b','thirdPartyCountryService','thirdPartyCountryDelivery','photovoltaicEquipment'];
+        $taxTypes = self::NESTED_ENUMS['taxConditions.taxType'];
         $tax = $params['taxConditions'] ?? null;
         if (!is_array($tax) || !is_string($tax['taxType'] ?? null)) {
             throw new AppError('validation_error', 'taxConditions.taxType is required.', 400, false, ['field' => 'taxConditions.taxType']);
         }
-        $params['taxConditions']['taxType'] = $this->aliases->enum($tax['taxType'], $taxTypes);
+        $params['taxConditions']['taxType'] = $this->aliases->enum($tax['taxType'], $taxTypes, 'parameters.taxConditions.taxType');
         if (array_key_exists('taxSubType', $tax) && $tax['taxSubType'] !== null) {
             if (!is_string($tax['taxSubType'])) {
                 throw new AppError('validation_error', 'taxConditions.taxSubType must be a string or null.', 400);
             }
-            $params['taxConditions']['taxSubType'] = $this->aliases->enum($tax['taxSubType'], ['distanceSales','electronicServices']);
+            $params['taxConditions']['taxSubType'] = $this->aliases->enum($tax['taxSubType'], self::NESTED_ENUMS['taxConditions.taxSubType'], 'parameters.taxConditions.taxSubType');
         }
 
         $total = $params['totalPrice'] ?? null;
-        if (!is_array($total) || ($total['currency'] ?? null) !== 'EUR') {
+        if (!is_array($total) || !in_array($total['currency'] ?? null, self::NESTED_ENUMS['totalPrice.currency'], true)) {
             throw new AppError('validation_error', 'totalPrice.currency must be EUR.', 400, false, ['field' => 'totalPrice.currency']);
         }
         foreach (['totalDiscountAbsolute','totalDiscountPercentage'] as $field) {
@@ -404,7 +424,7 @@ final class Validator
                 throw new AppError('validation_error', "totalPrice.{$field} must be numeric.", 400, false, ['field' => "totalPrice.{$field}"]);
             }
         }
-        if (isset($params['language']) && !in_array(strtolower((string) $params['language']), ['de','en'], true)) {
+        if (isset($params['language']) && !in_array(strtolower((string) $params['language']), self::NESTED_ENUMS['language'], true)) {
             throw new AppError('validation_error', 'language must be de or en.', 400, false, ['field' => 'language']);
         }
         if (isset($params['language'])) {
@@ -415,7 +435,7 @@ final class Validator
             if (!is_string($item['type'] ?? null)) {
                 throw new AppError('validation_error', "lineItems[{$index}].type is required.", 400);
             }
-            $item['type'] = $this->aliases->enum($item['type'], ['custom','material','service','text']);
+            $item['type'] = $this->aliases->enum($item['type'], self::NESTED_ENUMS['lineItems[].type'], "parameters.lineItems[{$index}].type");
             if ($item['type'] === 'text') {
                 if ((!is_string($item['name'] ?? null) || trim($item['name']) === '') && (!is_string($item['description'] ?? null) || trim($item['description']) === '')) {
                     throw new AppError('validation_error', "lineItems[{$index}] text requires name or description.", 400);
@@ -461,7 +481,7 @@ final class Validator
             if (!is_array($shipping) || !is_string($shipping['shippingType'] ?? null)) {
                 throw new AppError('validation_error', 'shippingConditions.shippingType is required.', 400);
             }
-            $params['shippingConditions']['shippingType'] = $this->aliases->enum($shipping['shippingType'], ['service','serviceperiod','delivery','deliveryperiod','none']);
+            $params['shippingConditions']['shippingType'] = $this->aliases->enum($shipping['shippingType'], self::NESTED_ENUMS['shippingConditions.shippingType'], 'parameters.shippingConditions.shippingType');
             $type = $params['shippingConditions']['shippingType'];
             if ($type !== 'none') {
                 $this->assertRfc3339($shipping['shippingDate'] ?? null, 'shippingConditions.shippingDate');

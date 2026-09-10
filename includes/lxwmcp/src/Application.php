@@ -59,6 +59,16 @@ final class Application
                 (new McpServer($oauth, $tools, $content))->handle();
                 return;
             }
+            if (preg_match('#^/uploads/([a-f0-9-]{36})$#D', $path, $uploadMatch)) {
+                if ($method !== 'PUT') throw new AppError('method_not_allowed', 'Upload endpoint requires PUT.', 405);
+                if ((int) ($_SERVER['CONTENT_LENGTH'] ?? 0) > UploadStore::MAX_BYTES) throw new AppError('file_size_invalid', 'Maximum file size is 4500000 bytes (4.5 MB).', 413);
+                $input = fopen('php://input', 'rb');
+                if ($input === false) throw new AppError('invalid_file', 'Cannot read upload body.', 400);
+                try {
+                    self::json((new UploadStore($pdo))->receive($uploadMatch[1], Util::header('X-Upload-Token') ?? '', $input));
+                } finally { fclose($input); }
+                return;
+            }
             if ($path === self::DISCOVERY_RESOURCE) {
                 self::json($oauth->protectedResourceMetadata());
                 return;
@@ -98,7 +108,7 @@ final class Application
                 return;
             }
             if ($path === '/accounts') {
-                self::accounts($method, $oauth, $accounts, $client);
+                self::accounts($method, $oauth, $accounts, $client, new UserSettings($pdo));
                 return;
             }
             if ($path === '/' && $method === 'GET') {
@@ -178,7 +188,7 @@ final class Application
         return is_scalar($status) && (int) $status === 403;
     }
 
-    private static function accounts(string $method, OAuth $oauth, AccountStore $accounts, LexwareClient $client): void
+    private static function accounts(string $method, OAuth $oauth, AccountStore $accounts, LexwareClient $client, UserSettings $settings): void
     {
         $user = $oauth->currentWebUser();
         if ($method === 'POST' && ($_POST['action'] ?? '') === 'login') {
@@ -198,6 +208,11 @@ final class Application
             self::requireForm();
             $oauth->assertCsrf($_POST);
             $action = $_POST['action'] ?? '';
+            if ($action === 'update_user_settings') {
+                $settings->setFinalizeEnabled($user, ($_POST['finalize_enabled'] ?? '') === '1');
+                header('Location: /accounts?settings_saved=1', true, 303);
+                return;
+            }
             if ($action === 'save') {
                 $alias = Util::requireString($_POST, 'alias', 96);
                 $apiKey = Util::requireString($_POST, 'api_key', 512);
@@ -219,6 +234,20 @@ final class Application
                 header('Location: /accounts', true, 303);
                 return;
             }
+            if ($action === 'update_connection') {
+                $scopes = $_POST['scopes'] ?? [];
+                if (!is_array($scopes)) {
+                    throw new AppError('validation_error', 'Permissions must be submitted as a list.', 400);
+                }
+                $oauth->updateConnection(
+                    $user,
+                    Util::requireString($_POST, 'connection_id', 36),
+                    Util::requireString($_POST, 'connection_name', 96),
+                    $scopes,
+                );
+                header('Location: /accounts?connection_saved=1', true, 303);
+                return;
+            }
             throw new AppError('invalid_request', 'Unknown account action.', 400);
         }
         if ($method !== 'GET') {
@@ -226,10 +255,41 @@ final class Application
         }
         $rows = '';
         $csrf = OAuth::h($oauth->csrfToken());
+        $finalizeChecked = $settings->finalizeEnabled($user) ? ' checked' : '';
+        $settingsForm = '<h2>Benutzereinstellungen</h2><form method="post"><input type="hidden" name="csrf_token" value="' . $csrf . '"><input type="hidden" name="action" value="update_user_settings">'
+            . '<label class="permission"><input type="checkbox" name="finalize_enabled" value="1"' . $finalizeChecked . '> Belege finalisieren und verbuchen erlauben</label>'
+            . '<p>Gilt für alle Ihre Verbindungen und Lexware-Accounts. Die einzelne Verbindung benötigt zusätzlich die Berechtigung zum Finalisieren. Ausschalten sperrt neue Buchungsaufrufe sofort.</p><button>Einstellung speichern</button></form>';
         foreach ($accounts->listForUser($user) as $account) {
             $rows .= '<tr><td>' . OAuth::h((string) $account['alias']) . '</td><td>' . OAuth::h((string) ($account['organization_name'] ?? '')) . '</td><td>' . ((int) $account['active'] === 1 ? 'aktiv' : 'inaktiv') . '</td><td><form method="post"><input type="hidden" name="csrf_token" value="' . $csrf . '"><input type="hidden" name="action" value="deactivate"><input type="hidden" name="alias" value="' . OAuth::h((string) $account['alias']) . '"><button>Deaktivieren</button></form></td></tr>';
         }
-        $body = '<h1>Lexware-Accounts</h1><table><tr><th>Alias</th><th>Organisation</th><th>Status</th><th></th></tr>' . $rows . '</table><h2>API-Key hinterlegen oder ersetzen</h2><form method="post"><input type="hidden" name="csrf_token" value="' . $csrf . '"><input type="hidden" name="action" value="save"><label>Account-Alias<input name="alias" required maxlength="96"></label><label>Lexware API-Key<input type="password" name="api_key" required autocomplete="off"></label><button>Speichern und prüfen</button></form><p>Der API-Key wird nach dem Speichern nicht wieder angezeigt.</p>';
+        $connections = '';
+        $scopeLabels = [
+            'accounts:read' => 'Lexware-Accounts auflisten',
+            'lexware:read' => 'Lexware-Daten lesen',
+            'lexware:write' => 'Entwürfe erstellen und ändern / Dateien hochladen',
+            'lexware:finalize' => 'Belege finalisieren oder verbuchen',
+            'lexware:delete' => 'Daten löschen',
+            'content:read' => 'Anleitungen und MCP-Inhalte lesen',
+        ];
+        foreach ($oauth->listConnections($user) as $connection) {
+            $allowed = is_array($connection['allowed_scopes'] ?? null) ? $connection['allowed_scopes'] : [];
+            $requested = is_array($connection['requested_scopes'] ?? null) ? $connection['requested_scopes'] : [];
+            $checks = '';
+            foreach ($scopeLabels as $scope => $label) {
+                $checked = in_array($scope, $allowed, true) ? ' checked' : '';
+                $checks .= '<label class="permission"><input type="checkbox" name="scopes[]" value="' . OAuth::h($scope) . '"' . $checked . '> ' . OAuth::h($label) . '</label>';
+            }
+            $technicalName = (string) ($connection['client_name'] ?: $connection['client_id']);
+            $requestedText = implode(', ', array_map(static fn(string $scope): string => $scopeLabels[$scope] ?? $scope, $requested));
+            $connections .= '<form method="post" class="connection"><input type="hidden" name="csrf_token" value="' . $csrf . '"><input type="hidden" name="action" value="update_connection"><input type="hidden" name="connection_id" value="' . OAuth::h((string) $connection['id']) . '">'
+                . '<label>Anzeigename<input name="connection_name" required maxlength="96" value="' . OAuth::h((string) $connection['name']) . '"></label>'
+                . '<p class="muted">Client: ' . OAuth::h($technicalName) . '<br>Ursprünglich angefragt: ' . OAuth::h($requestedText) . '</p><fieldset><legend>Berechtigungen</legend>' . $checks . '</fieldset><button>Verbindung speichern</button></form>';
+        }
+        if ($connections === '') {
+            $connections = '<p>Noch keine MCP-Verbindung vorhanden. Sie erscheint hier nach der ersten OAuth-Freigabe.</p>';
+        }
+        $body = '<h1>Lexware MCP verwalten</h1>' . $settingsForm . '<h2>Verbundene Harnesse</h2><p>Diese Freigaben gelten sofort. Nicht freigegebene Tools werden dem jeweiligen Harness nicht mehr in <code>tools/list</code> angeboten.</p>' . $connections
+            . '<h2>Lexware-Accounts</h2><table><tr><th>Alias</th><th>Organisation</th><th>Status</th><th></th></tr>' . $rows . '</table><h2>API-Key hinterlegen oder ersetzen</h2><form method="post"><input type="hidden" name="csrf_token" value="' . $csrf . '"><input type="hidden" name="action" value="save"><label>Account-Alias<input name="alias" required maxlength="96"></label><label>Lexware API-Key<input type="password" name="api_key" required autocomplete="off"></label><button>Speichern und prüfen</button></form><p>Der API-Key wird nach dem Speichern nicht wieder angezeigt.</p>';
         $oauth->html('Lexware-Accounts', $body);
     }
 
