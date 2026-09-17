@@ -1,5 +1,9 @@
 /data/lxwmcp/*
 !/data/lxwmcp/.gitkeep
 /includes/lxwmcp/config/local.php
+/data/todo/*
+!/data/todo/.gitkeep
+/data/todo.mopoliti.de/*
+!/data/todo.mopoliti.de/.gitkeep
 /.idea/
 *.log

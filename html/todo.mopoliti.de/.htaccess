@@ -1,0 +1,10 @@
+Options -Indexes
+DirectoryIndex index.php
+RewriteEngine On
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+RewriteRule ^\.well-known/ index.php [END,QSA]
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteRule ^ index.php [END,QSA]
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>
