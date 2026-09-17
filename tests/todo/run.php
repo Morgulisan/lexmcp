@@ -36,6 +36,19 @@ function task(Service $user, array $project, array $fields = []): array {
 }
 function input(array $t, array $extra = []): array { return $extra + ['task_id' => $t['id'], 'expected_version' => $t['version']]; }
 
+test('database migration is idempotent and preserves existing data', function () {
+    $db = new Database(new PDO('sqlite::memory:'));
+    $db->migrate();
+    $workspace = $db->workspace(42);
+    $before = $db->query("SELECT name,policy_json,revision FROM todo_workspaces WHERE id=?", [$workspace])->fetch();
+    $tablesBefore = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'todo_%' ORDER BY name")->fetchAll(PDO::FETCH_COLUMN);
+
+    $db->migrate();
+
+    check($db->query("SELECT name,policy_json,revision FROM todo_workspaces WHERE id=?", [$workspace])->fetch() === $before, 'Repeated migration changed existing data.');
+    check($db->query("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'todo_%' ORDER BY name")->fetchAll(PDO::FETCH_COLUMN) === $tablesBefore, 'Repeated migration changed the schema inventory.');
+});
+
 test('exclusive claims, stale versions and idempotent retry', function () {
     [$db,$u,$a,$b,$p] = fixture(); $t = task($u,$p);
     $args = input($t, ['idempotency_key' => 'claim-1234']);
