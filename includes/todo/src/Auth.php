@@ -173,9 +173,6 @@ final class Auth
             unset($password,$hash);
         }
         if ($user===false||(int)$user!==Config::owner()) throw new Failure('login_failed','Anmeldung fehlgeschlagen.',401);
-        // Keep deployments self-updating without granting unauthenticated requests DDL access.
-        // Database::migrate() only contains idempotent CREATE TABLE IF NOT EXISTS statements.
-        $this->db->migrate();
         $token=bin2hex(random_bytes(32));$this->put('web',hash('sha256',$token),['user'=>(int)$user,'csrf'=>bin2hex(random_bytes(32))],43200);
         setcookie('todo_session',$token,['expires'=>time()+43200,'path'=>'/','secure'=>true,'httponly'=>true,'samesite'=>'Lax']);
         $_COOKIE['todo_session']=$token;

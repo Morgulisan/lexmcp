@@ -23,7 +23,7 @@ Separate, abhängigkeitssfreie PHP-8.4-Anwendung für `todo.mopoliti.de` mit deu
 
 8. Über HTTPS anmelden, Projekt erstellen und den MCP unter `https://todo.mopoliti.de/mcp` verbinden. Vor dem Produktiveinsatz die MySQL-Tests, den tatsächlichen zentralen Login, Upload-Scanner und OAuth-Callback im Zielhosting prüfen.
 
-Die initiale Schemaanlage ist wiederholbar. Normale HTTP-Requests führen keine DDL-Migrationen aus. Die Laufzeit-DB-Rolle benötigt kein CREATE-/ALTER-Recht. Tabellen beginnen mit `todo_` und kollidieren nicht mit `lxmcp_`.
+Die initiale Schemaanlage ist wiederholbar und wird beim HTTP-Start geprüft. Die Laufzeit-DB-Rolle benötigt deshalb `CREATE`-Recht. Tabellen beginnen mit `todo_` und kollidieren nicht mit `lxmcp_`.
 
 ## Aufbau
 
