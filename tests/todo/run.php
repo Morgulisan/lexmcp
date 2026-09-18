@@ -36,6 +36,41 @@ function task(Service $user, array $project, array $fields = []): array {
 }
 function input(array $t, array $extra = []): array { return $extra + ['task_id' => $t['id'], 'expected_version' => $t['version']]; }
 
+test('users can create ready tasks atomically while agents must create drafts', function () {
+    [$db,$u,$a,,$p] = fixture();
+    $input=['project_id'=>$p['id'],'title'=>'Direkt bereit','status'=>'ready','idempotency_key'=>Support::id()];
+    $ready=$u->mutate('task_create',$input);
+    check($ready['status']==='ready' && $ready['version']===1);
+    check($u->mutate('task_create',$input)['id']===$ready['id']);
+    check(change($u,'task_create',['project_id'=>$p['id'],'title'=>'Entwurf','status'=>'draft'])['status']==='draft');
+    rejects('invalid_transition',fn()=>change($u,'task_create',['project_id'=>$p['id'],'title'=>'Ungültig','status'=>'done']));
+    rejects('user_only',fn()=>change($a,'task_create',['project_id'=>$p['id'],'title'=>'Agent','status'=>'ready']));
+});
+
+test('generated capabilities are unique and idempotent with descriptions', function () {
+    [$db,$u] = fixture();
+    $input = ['name'=>'Drive','description'=>'Dateien lesen','idempotency_key'=>Support::id()];
+    $first = $u->mutate('capability_save', $input);
+    check($first === $u->mutate('capability_save', $input));
+    check($first['description'] === 'Dateien lesen');
+    check($first['id'] !== change($u,'capability_save',['name'=>'Drive'])['id']);
+});
+test('date-only tasks use project timezone and include the whole due day across DST', function () {
+    [$db,$u,$a,$b,$p] = fixture();
+    $t = task($u,$p,['start_at'=>'2026-03-29','due_at'=>'2026-03-29']);
+    check($t['due_at'] - $t['start_at'] === 23*3600-1);
+    check($t['timezone'] === 'Europe/Berlin');
+    rejects('invalid_dates',fn()=>task($u,$p,['due_at'=>'2026-02-30']));
+    rejects('invalid_dates',fn()=>task($u,$p,['start_at'=>'2026-03-30','due_at'=>'2026-03-29']));
+    $p = change($u,'project_save',['id'=>$p['id'],'expected_version'=>$p['version'],'name'=>$p['name'],'timezone'=>'America/New_York']);
+    $updated = $u->read('task',['task_id'=>$t['id']])['task'];
+    check($updated['timezone'] === 'America/New_York');
+    check($updated['version'] === $t['version']+1);
+    check((new DateTimeImmutable('@'.$updated['due_at']))->setTimezone(new DateTimeZone($p['timezone']))->format('Y-m-d H:i:s') === '2026-03-29 23:59:59');
+    $new = task($u,$p,['due_at'=>'2026-11-01','start_at'=>'2026-11-01']);
+    check($new['due_at'] - $new['start_at'] === 25*3600-1);
+    rejects('invalid_timezone',fn()=>change($u,'project_save',['name'=>'Invalid','timezone'=>'Invalid/Zone']));
+});
 test('database migration is idempotent and preserves existing data', function () {
     $db = new Database(new PDO('sqlite::memory:'));
     $db->migrate();
@@ -99,6 +134,29 @@ test('memory has independent version, bounded size and no implicit disclosure', 
     change($u,'memory_update',input($t,['expected_memory_version'=>1,'content'=>'']));
     check(count($u->read('memory',['task_id'=>$t['id']])['history'])===2);
 });
+test('unchanged task, memory, project and policy writes create no versions or audit events',function(){
+    [$db,$u,$a,$b,$p]=fixture();$t=task($u,$p);
+    $audit=fn()=>(int)$db->query('SELECT COUNT(*) FROM todo_audit WHERE workspace_id=?',[$u->workspace])->fetchColumn();
+    $before=$audit();
+    $same=change($u,'update',input($t,['title'=>$t['title']]));
+    check($same['task']['version']===$t['version']);check($audit()===$before);
+    $memory=change($u,'memory_update',input($t,['expected_memory_version'=>0,'content'=>'']));
+    check($memory['memory_version']===0 && $memory['task']['version']===$t['version']);
+    check($u->read('memory',['task_id'=>$t['id']])['history']===[]);check($audit()===$before);
+    $sameProject=change($u,'project_save',['id'=>$p['id'],'expected_version'=>$p['version'],'name'=>$p['name'],'description'=>$p['description'],'policy'=>$p['policy'],'timezone'=>$p['timezone'],'archived'=>$p['archived']]);
+    check($sameProject['version']===$p['version']);check($audit()===$before);
+    $settings=$u->read('settings');
+    change($u,'policy_save',['policy'=>$settings['policy'],'expected_hash'=>$settings['policy_hash']]);
+    check($audit()===$before);
+    $skillInput=['project_id'=>$p['id'],'slug'=>'gleich','name'=>'Gleich','content'=>'Unverändert','capabilities'=>[],'draft'=>false];
+    $skill=change($u,'skill_save',$skillInput);$afterSkill=$audit();
+    $sameSkill=change($u,'skill_save',$skillInput);
+    check($sameSkill['id']===$skill['id'] && $sameSkill['sequence']===1);check($audit()===$afterSkill);
+});
+test('higher priority numbers sort first',function(){
+    [$db,$u,$a,$b,$p]=fixture();task($u,$p,['title'=>'Niedrig','priority'=>1]);task($u,$p,['title'=>'Hoch','priority'=>5]);
+    $items=$u->read('tasks')['items'];check($items[0]['title']==='Hoch');
+});
 test('questions release claims and answers return task to ready',function(){
     [$db,$u,$a,$b,$p]=fixture();$t=task($u,$p);$c=change($a,'claim',input($t));
     $q=change($a,'question',input($c['task'],['claim_token'=>$c['claim_token'],'content'=>'Welches Ergebnis?']));
@@ -142,6 +200,20 @@ test('revocation invalidates existing actor and releases leases',function(){
     change($u,'agent_revoke',['agent_id'=>'a','expected_version'=>1]);
     rejects('revoked',fn()=>$a->read('tasks'));
     $t=$u->read('task',['task_id'=>$t['id']])['task'];check($t['claim']===null);change($b,'claim',input($t));
+});
+test('agent names and permissions are editable and reduced rights release leases',function(){
+    [$db,$u,$a,$b,$p]=fixture();
+    $db->saveEntity($u->workspace,'agent',['id'=>'a','version'=>1,'name'=>'Alter Name','client_id'=>'client-a','projects'=>[$p['id']],'scopes'=>['todo:read','todo:write','todo:comment'],'revoked_at'=>null,'created_at'=>1700000000,'last_activity'=>null]);
+    $t=task($u,$p);change($a,'claim',input($t));
+    $updated=change($u,'agent_update',['agent_id'=>'a','expected_version'=>1,'name'=>'Recherche','projects'=>[$p['id']],'scopes'=>['todo:read','todo:comment']]);
+    check($updated['name']==='Recherche' && $updated['version']===2);
+    $same=change($u,'agent_update',['agent_id'=>'a','expected_version'=>2,'name'=>'Recherche','projects'=>[$p['id']],'scopes'=>['todo:comment','todo:read']]);
+    check($same['version']===2);
+    check($u->read('task',['task_id'=>$t['id']])['task']['claim']===null);
+    $limited=new Service($db,new Crypto(random_bytes(32)),new Actor(42,'a',[$p['id']],$updated['scopes'],[],'client-a','run-a'),'limited');
+    rejects('insufficient_scope',fn()=>change($limited,'task_create',['project_id'=>$p['id'],'title'=>'Nicht erlaubt']));
+    rejects('invalid_scope',fn()=>change($u,'agent_update',['agent_id'=>'a','expected_version'=>2,'name'=>'Recherche','projects'=>[$p['id']],'scopes'=>['todo:admin']]));
+    rejects('project_required',fn()=>change($u,'agent_update',['agent_id'=>'a','expected_version'=>2,'name'=>'Recherche','projects'=>[],'scopes'=>['todo:read']]));
 });
 test('tenant and project isolation',function(){
     [$db,$u,$a,$b,$p]=fixture();$other=change($u,'project_save',['name'=>'Privat']);$t=task($u,$other);

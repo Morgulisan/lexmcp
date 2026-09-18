@@ -20,13 +20,23 @@ trait CatalogActions
         $this->enforce('draft', ['id' => 'skill-draft', 'project_id' => $project['id'], 'risk' => 1, 'priority' => 3, 'policy' => []]);
         $slug = Support::text($input, 'slug', 100);
         if (!preg_match('/^[a-z0-9]+(?:-[a-z0-9]+)*$/D', $slug)) throw new Failure('invalid_slug', 'Skill-Slug ist ungültig.');
-        $sequence = 1;
-        foreach ($this->db->entities($this->workspace, 'skill') as $skill) if ($skill['project_id'] === $project['id'] && $skill['slug'] === $slug) $sequence = max($sequence, $skill['sequence'] + 1);
+        $sequence = 1; $latest = null;
+        foreach ($this->db->entities($this->workspace, 'skill') as $skill) if ($skill['project_id'] === $project['id'] && $skill['slug'] === $slug) {
+            $sequence = max($sequence, $skill['sequence'] + 1);
+            if ($latest === null || $skill['sequence'] > $latest['sequence']) $latest = $skill;
+        }
         $content = Support::text($input, 'content', 30000);
         Support::noSecrets($content);
         $caps = Support::strings($input['capabilities'] ?? []);
         foreach ($caps as $id) $this->db->entity($this->workspace, 'capability', $id);
-        $skill = ['id' => Support::id(), 'version' => 1, 'sequence' => $sequence, 'project_id' => $project['id'], 'slug' => $slug, 'name' => Support::text($input, 'name', 160), 'content' => $content, 'capabilities' => $caps, 'draft' => !$this->actor->isUser() || ($input['draft'] ?? false) === true, 'author' => $this->actor->key(), 'created_at' => $this->now()];
+        $name = Support::text($input, 'name', 160);
+        $draft = !$this->actor->isUser() || ($input['draft'] ?? false) === true;
+        $sameCaps = $caps;
+        sort($sameCaps);
+        $latestCaps = $latest['capabilities'] ?? [];
+        sort($latestCaps);
+        if ($latest !== null && $latest['name'] === $name && $latest['content'] === $content && $latestCaps === $sameCaps && $latest['draft'] === $draft) return $latest;
+        $skill = ['id' => Support::id(), 'version' => 1, 'sequence' => $sequence, 'project_id' => $project['id'], 'slug' => $slug, 'name' => $name, 'content' => $content, 'capabilities' => $caps, 'draft' => $draft, 'author' => $this->actor->key(), 'created_at' => $this->now()];
         $this->db->saveEntity($this->workspace, 'skill', $skill);
         $this->audit('skill_save', null, ['id' => $skill['id'], 'sequence' => $sequence, 'draft' => $skill['draft']]);
         return $skill;
@@ -68,12 +78,52 @@ trait CatalogActions
         $this->audit('agent_revoke', null, ['agent_id' => $agent['id']]);
         return $agent;
     }
+    private function updateConnection(array $input): array
+    {
+        $this->actor->userOnly();
+        $agent = $this->db->entity($this->workspace, 'agent', Support::text($input, 'agent_id', 32));
+        $this->version($agent, $input);
+        if ($agent['revoked_at'] !== null) throw new Failure('connection_revoked', 'Eine widerrufene Verbindung kann nicht mehr geändert werden.', 409);
+
+        $name = trim(Support::text($input, 'name', 160));
+        $projects = Support::strings($input['projects'] ?? []);
+        $scopes = Support::strings($input['scopes'] ?? []);
+        if (!$projects) throw new Failure('project_required', 'Mindestens ein Projekt muss freigegeben bleiben.');
+        foreach ($projects as $id) $this->db->entity($this->workspace, 'project', $id);
+        if (!in_array('todo:read', $scopes, true) || array_diff($scopes, Auth::SCOPES)) throw new Failure('invalid_scope', 'Lesen ist erforderlich und es sind nur bekannte Berechtigungen erlaubt.');
+
+        $oldProjects = $agent['projects']; $oldScopes = $agent['scopes'];
+        sort($oldProjects); sort($oldScopes);
+        $newProjects = $projects; $newScopes = $scopes;
+        sort($newProjects); sort($newScopes);
+        if ($agent['name'] === $name && $oldProjects === $newProjects && $oldScopes === $newScopes) return $agent;
+
+        $agent['name'] = $name;
+        $agent['projects'] = $projects;
+        $agent['scopes'] = $scopes;
+        $agent['version']++;
+        $this->db->saveEntity($this->workspace, 'agent', $agent);
+
+        // Claims are released when the connection can no longer continue them.
+        foreach ($this->db->tasks($this->workspace) as $task) {
+            if (($task['claim']['agent_id'] ?? null) !== $agent['id']) continue;
+            if (in_array('todo:write', $scopes, true) && in_array($task['project_id'], $projects, true)) continue;
+            $task['claim'] = null;
+            if ($task['status'] === 'agent_working') $task['status'] = 'ready';
+            $task['version']++;
+            $this->db->saveTask($this->workspace, $task);
+            $this->audit('claim_revoked', $task['id'], ['agent_id' => $agent['id'], 'reason' => 'permissions_changed']);
+        }
+        $this->audit('agent_update', null, ['agent_id' => $agent['id'], 'projects' => $projects, 'scopes' => $scopes]);
+        return $agent;
+    }
     private function savePolicy(array $input): array
     {
         $this->actor->userOnly();
         $policy = Policy::validate($input['policy'] ?? null);
         $current = $this->db->query('SELECT policy_json FROM todo_workspaces WHERE id=?', [$this->workspace])->fetchColumn();
         if (($input['expected_hash'] ?? null) !== hash('sha256', $current)) throw new Failure('version_conflict', 'Policy wurde geändert.', 409);
+        if ($policy === Support::decode($current)) return ['policy' => $policy, 'hash' => hash('sha256', $current)];
         $this->db->query('UPDATE todo_workspaces SET policy_json=? WHERE id=?', [Support::json($policy), $this->workspace]);
         $this->audit('policy_save', null, ['before' => Support::decode($current), 'after' => $policy]);
         return ['policy' => $policy, 'hash' => hash('sha256', Support::json($policy))];

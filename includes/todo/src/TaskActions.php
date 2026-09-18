@@ -10,6 +10,7 @@ trait TaskActions
         $task = $this->task(Support::text($input, 'task_id', 32), in_array($action, ['archive','restore','delete'], true));
         $this->version($task, $input);
         $before = $this->publicTask($task);
+        $originalTask = $task;
         $extra = [];
         $userActions = ['approve_plan','review_decide','answer','delete','archive','restore','cancel','takeover'];
         if (in_array($action, $userActions, true)) $this->actor->userOnly();
@@ -33,6 +34,7 @@ trait TaskActions
                     $candidate['status'] = $status;
                     if ($status === 'waiting_external') $candidate['claim'] = null;
                 }
+                if ($candidate === $originalTask) return ['task' => $before];
                 $task = $candidate;
                 break;
             case 'claim':
@@ -70,10 +72,11 @@ trait TaskActions
                 $memory = $this->db->task($this->workspace, $task['id'], true);
                 if (($input['expected_memory_version'] ?? null) !== (int)$memory['memory_version']) throw new Failure('memory_conflict', 'Memory wurde geändert. Bitte neu laden.', 409);
                 $content = Support::text($input, 'content', 2048, true);
-                if (($input['mode'] ?? 'replace') === 'append') $content = $memory['memory_md'] . ($memory['memory_md'] === '' ? '' : "\n") . $content;
+                if (($input['mode'] ?? 'replace') === 'append') $content = $content === '' ? $memory['memory_md'] : $memory['memory_md'] . ($memory['memory_md'] === '' ? '' : "\n") . $content;
                 elseif (($input['mode'] ?? 'replace') !== 'replace') throw new Failure('invalid_mode', 'Memory-Modus muss replace oder append sein.');
                 Support::text(['content' => $content], 'content', 2048, true);
                 Support::noSecrets($content);
+                if ($content === $memory['memory_md']) return ['task' => $before, 'memory_version' => (int)$memory['memory_version']];
                 $version = (int)$memory['memory_version'] + 1;
                 $this->db->query('UPDATE todo_tasks SET memory_md=?,memory_version=? WHERE workspace_id=? AND id=?', [$content, $version, $this->workspace, $task['id']]);
                 $this->db->saveEntity($this->workspace, 'memory', ['id' => Support::id(), 'version' => $version, 'task_id' => $task['id'], 'content' => $content, 'author' => $this->actor->key(), 'created_at' => $this->now()]);
@@ -93,6 +96,7 @@ trait TaskActions
                 $oldComment = $comment;
                 $comment['content'] = Support::text($input, 'content', 10000);
                 Support::noSecrets($comment['content']);
+                if ($comment['content'] === $oldComment['content']) return ['task' => $before, 'comment' => $oldComment];
                 $comment['version']++;
                 $this->db->saveEntity($this->workspace, 'comment', $comment);
                 $extra['comment'] = $comment;

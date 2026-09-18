@@ -1,10 +1,24 @@
 Options -Indexes
 DirectoryIndex index.php
 RewriteEngine On
-RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
-RewriteRule ^\.well-known/ index.php [END,QSA]
-RewriteCond %{REQUEST_FILENAME} !-f
-RewriteRule ^ index.php [END,QSA]
+
+# Preserve bearer credentials when PHP is served through CGI/FastCGI.
+RewriteCond %{HTTP:Authorization} .
+RewriteRule ^ - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+# Dot-prefixed files stay private. OAuth discovery is the deliberate exception:
+# Apache merges this <If> section after <FilesMatch>, so hosting-wide dot-path
+# protection cannot turn the public discovery documents into a 403 response.
 <FilesMatch "^\.">
     Require all denied
 </FilesMatch>
+<If "%{REQUEST_URI} =~ m#^/\.well-known/#">
+    Require all granted
+</If>
+
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteRule ^ index.php [END,QSA]
+
+# Some hosting layers reject dot paths before rewriting. Redirect that denial to
+# an equivalent public metadata document handled by the front controller.
+ErrorDocument 403 https://todo.mopoliti.de/oauth/discovery

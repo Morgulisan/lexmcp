@@ -63,6 +63,7 @@ final class Service
                 'task_create' => $this->createTask($input),
                 'skill_save' => $this->saveSkill($input),
                 'session_begin' => $this->sessionBegin($input),
+                'agent_update' => $this->updateConnection($input),
                 'agent_revoke' => $this->revokeConnection($input),
                 'policy_save' => $this->savePolicy($input),
                 'view_save' => $this->saveView($input),
@@ -145,7 +146,7 @@ final class Service
             if (($input['attention'] ?? false) && !in_array($task['status'], ['waiting_user','review'], true) && !($task['due_at'] !== null && $task['due_at'] < $this->now() && !in_array($task['status'], ['done','cancelled'], true)) && !($task['agent_error'] ?? false)) continue;
             $items[] = $task;
         }
-        usort($items, fn($a, $b) => [$a['priority'], $a['due_at'] ?? PHP_INT_MAX, $a['id']] <=> [$b['priority'], $b['due_at'] ?? PHP_INT_MAX, $b['id']]);
+        usort($items, fn($a, $b) => [-$a['priority'], $a['due_at'] ?? PHP_INT_MAX, $a['id']] <=> [-$b['priority'], $b['due_at'] ?? PHP_INT_MAX, $b['id']]);
         $offset = isset($input['offset']) ? Support::number($input, 'offset', 0, 1000000) : 0;
         $limit = isset($input['limit']) ? Support::number($input, 'limit', 1, 200) : 100;
         return ['items' => array_slice($items, $offset, $limit), 'total' => count($items), 'next_offset' => count($items) > $offset + $limit ? $offset + $limit : null];
@@ -182,6 +183,27 @@ final class Service
         if ($old) $this->version($old, $input);
         $project = ['id' => $old['id'] ?? Support::id(), 'version' => ($old['version'] ?? 0) + 1, 'name' => Support::text($input, 'name', 160), 'description' => Support::text($input + ['description' => ''], 'description', 10000, true), 'policy' => Policy::validate($input['policy'] ?? $old['policy'] ?? []), 'archived' => (bool)($input['archived'] ?? false)];
         Support::noSecrets($project['description']);
+        $project['timezone'] = Support::text($input + ['timezone' => $old['timezone'] ?? 'Europe/Berlin'], 'timezone', 100);
+        if (!in_array($project['timezone'], \DateTimeZone::listIdentifiers(), true)) throw new Failure('invalid_timezone', 'Unbekannte Zeitzone.');
+        if ($old) {
+            $oldComparable = $old; $projectComparable = $project;
+            unset($oldComparable['version'], $projectComparable['version']);
+            if ($oldComparable === $projectComparable) return $old;
+        }
+        if ($old && ($old['timezone'] ?? 'Europe/Berlin') !== $project['timezone']) {
+            foreach ($this->db->tasks($this->workspace) as $task) {
+                if ($task['project_id'] !== $project['id']) continue;
+                foreach (['start_at', 'due_at'] as $field) if ($task[$field] !== null) {
+                    $local = (new \DateTimeImmutable('@' . $task[$field]))->setTimezone(new \DateTimeZone($task['timezone']));
+                    $task[$field] = (new \DateTimeImmutable($local->format('Y-m-d H:i:s'), new \DateTimeZone($project['timezone'])))->getTimestamp();
+                }
+                $task['timezone'] = $project['timezone'];
+                $task['recurrence_step'] = 0;
+                $task['version']++;
+                $task['updated_at'] = $this->now();
+                $this->db->saveTask($this->workspace, $task);
+            }
+        }
         $this->db->saveEntity($this->workspace, 'project', $project);
         $this->audit('project_save', null, ['id' => $project['id'], 'version' => $project['version']]);
         return $project;
@@ -189,16 +211,25 @@ final class Service
     private function saveCapability(array $input): array
     {
         $this->actor->userOnly();
-        $id = Support::text($input, 'id', 64);
+        $id = isset($input['id']) ? Support::text($input, 'id', 64) : Support::id();
         if (!preg_match('/^[a-z0-9][a-z0-9._-]*$/D', $id)) throw new Failure('invalid_id', 'Capability-ID ist ungültig.');
         $value = ['id' => $id, 'version' => 1, 'name' => Support::text($input, 'name', 160)];
         foreach ($this->db->entities($this->workspace, 'capability') as $old) if ($old['id'] === $id) { $this->version($old, $input); $value['version'] = $old['version'] + 1; }
+        $value['description'] = Support::text($input + ['description' => ''], 'description', 10000, true);
         $this->db->saveEntity($this->workspace, 'capability', $value);
         $this->audit('capability_save', null, ['id' => $id]);
         return $value;
     }
     private function fields(array $input, array $task): array
     {
+        $project = $this->project($task['project_id']);
+        $input['timezone'] = $project['timezone'] ?? 'Europe/Berlin';
+        foreach (['start_at', 'due_at'] as $field) {
+            if (!isset($input[$field]) || !is_string($input[$field])) continue;
+            $day = \DateTimeImmutable::createFromFormat('!Y-m-d', $input[$field], new \DateTimeZone($input['timezone']));
+            if (!$day || $day->format('Y-m-d') !== $input[$field]) throw new Failure('invalid_dates', 'Ungültiges Datum.');
+            $input[$field] = ($field === 'due_at' ? $day->setTime(23, 59, 59) : $day)->getTimestamp();
+        }
         foreach (['due_at','recurrence','timezone'] as $scheduleField) if (array_key_exists($scheduleField, $input) && $input[$scheduleField] !== $task[$scheduleField]) $task['recurrence_step'] = 0;
         $allowed = ['title','description','priority','risk','effort','start_at','due_at','timezone','tags','capabilities','skill_ids','recurrence','policy'];
         foreach ($allowed as $field) {
@@ -236,6 +267,11 @@ final class Service
         }
         $task = $this->fields($input, $task);
         $this->enforce('draft', $task);
+        if (($input['status'] ?? 'draft') !== 'draft') {
+            $this->actor->userOnly();
+            if ($input['status'] !== 'ready') throw new Failure('invalid_transition', 'Neue Aufgaben sind Entwürfe oder bereit.');
+            $task['status'] = 'ready';
+        }
         $this->db->saveTask($this->workspace, $task, true);
         $this->audit('task_create', $task['id'], ['title' => $task['title'], 'version' => 1]);
         return $this->publicTask($task);

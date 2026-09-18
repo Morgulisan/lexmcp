@@ -38,6 +38,12 @@ Aufgaben besitzen eigene Zeilen mit `memory_md`, `memory_version` und `version`.
 
 ## Bedienung
 
+Die blaue Oberfläche zeigt die vollständige Liste aktiver Projekte direkt unter „Projekte“ in der Seitenleiste. Neue Capabilities benötigen nur Namen und Beschreibung; ihre IDs entstehen serverseitig und bleiben für Agenten im Katalog verfügbar.
+
+Das Aufgabenformular verwendet Start- und Fälligkeitstage. Die Projektzeitzone (standardmäßig `Europe/Berlin`) gilt für alle Aufgaben; ein Starttag beginnt um 00:00 Uhr, die Fälligkeit endet um 23:59:59 Uhr. Änderungen der Projektzeitzone erhalten die lokalen Datums- und Uhrzeitangaben bestehender Aufgaben und erhöhen deren Version. Numerische API-Zeitstempel bleiben unterstützt. Globale, Projekt- und Aufgaben-Policies lassen sich mit dem Regel-Builder oder über die ergänzende JSON-Ansicht bearbeiten.
+
+`node tests/todo/ui.cjs` prüft die Oberfläche mit Playwright und installiertem Chrome anhand isolierter API-Fixtures. Voraussetzung ist ein verfügbares `playwright`-Modul (gegebenenfalls über `NODE_PATH`). Desktop- und Mobil-Screenshots landen im System-Temp oder in `TODO_UI_OUTPUT`.
+
 „Meine Aufmerksamkeit“ bündelt offene Rückfragen/Pläne, Reviews, überfällige Aufgaben und abgelaufene Agentenläufe. Aufgaben sind als Liste, Board und Monatskalender verfügbar. Filter können als Sichten gespeichert werden. Unteraufgaben sind eigene Aufgaben. Eine harte Abhängigkeit erzeugt zusätzlich eine verknüpfte Unteraufgabe; Zyklen einschließlich widersprüchlicher Elternbeziehungen werden abgewiesen.
 
 Aufgabenbeschreibungen unterstützen eine sichere Markdown-Teilmenge (Überschriften, Fettdruck, Code, Aufzählungen); HTML wird immer escaped. Dateien werden nur als Downloads mit Attachment-Disposition ausgeliefert.

@@ -8,6 +8,7 @@ $public=dirname(__DIR__,2).'/html/todo.mopoliti.de';
 if(in_array($path,['/assets/app.css','/assets/app.js'],true)){header('Content-Type: '.(str_ends_with($path,'.css')?'text/css':'text/javascript'));readfile($public.$path);return;}
 require dirname(__DIR__,2).'/includes/todo/autoload.php';
 $db=new Todo\Database(new PDO('sqlite:'.sys_get_temp_dir().'/todo-ui-preview.sqlite'));$db->migrate();
+$db->pdo->exec("CREATE TABLE IF NOT EXISTS UserAccount (ID INTEGER PRIMARY KEY, username TEXT); INSERT OR IGNORE INTO UserAccount (ID, username) VALUES (424242, 'Demo Nutzer')");
 $crypto=new Todo\Crypto(hash('sha256','isolated-local-preview-only',true));
 $auth=new Todo\Auth($db,$crypto);$token=str_repeat('a',64);$auth->put('web',hash('sha256',$token),['user'=>424242,'csrf'=>'local-preview-only'],600);$_COOKIE['todo_session']=$token;
 if(isset($_SERVER['HTTP_ORIGIN'])){

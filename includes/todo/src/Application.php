@@ -23,8 +23,12 @@ final class Application
             if($method==='OPTIONS'){header('Allow: GET, POST, OPTIONS');http_response_code(204);return;}
             if(str_starts_with($path,'/.well-known/')){
                 if($method!=='GET')throw new Failure('method_not_allowed','GET erforderlich.',405);
-                if(!in_array($path,['/.well-known/oauth-protected-resource','/.well-known/oauth-protected-resource/mcp','/.well-known/oauth-authorization-server','/.well-known/oauth-authorization-server/mcp','/.well-known/openid-configuration'],true))throw new Failure('not_found','Nicht gefunden.',404);
+                if(!in_array($path,['/.well-known/oauth-protected-resource','/.well-known/oauth-protected-resource/mcp','/.well-known/oauth-authorization-server','/.well-known/oauth-authorization-server/mcp','/.well-known/openid-configuration','/.well-known/openid-configuration/mcp'],true))throw new Failure('not_found','Nicht gefunden.',404);
                 $this->json($this->auth->metadata(str_contains($path,'protected-resource')));return;
+            }
+            if($path==='/oauth/discovery'){
+                if($method!=='GET')throw new Failure('method_not_allowed','GET erforderlich.',405);
+                $this->json(array_merge($this->auth->metadata(true),$this->auth->metadata()));return;
             }
             if(in_array($path,['/oauth/register','/oauth/token','/oauth/revoke'],true)){
                 $this->post($method);$data=$this->body();
@@ -91,6 +95,7 @@ final class Application
                 $this->json($result);return;
             }
             if($path!=='/')throw new Failure('not_found','Nicht gefunden.',404);
+            $userName=trim((string)$this->db->query('SELECT username FROM UserAccount WHERE ID=?',[$session['user']])->fetchColumn())?:'Mein Workspace';
             $csrf=$session['csrf'];require dirname(__DIR__).'/views/app.php';
         }catch(Failure $error){
             if($error->status===401)header('WWW-Authenticate: Bearer resource_metadata="'.Config::url().'/.well-known/oauth-protected-resource", scope="todo:read"');

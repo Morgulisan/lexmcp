@@ -8,16 +8,16 @@
     <button class="primary new-task" data-command="new-task"><span>＋</span> Neue Aufgabe <kbd>N</kbd></button>
     <nav aria-label="Hauptnavigation">
       <button data-page="attention" class="active"><span>◉</span> Meine Aufmerksamkeit <b id="attention-count">0</b></button>
-      <button data-page="projects"><span>▦</span> Projekte</button>
       <button data-page="tasks"><span>☷</span> Aufgaben</button>
+      <button data-page="projects"><span>▦</span> Projekte</button>
+      <div id="project-shortcuts" class="project-shortcuts"></div>
       <button data-page="activity"><span>↗</span> Agentenaktivität</button>
       <div class="nav-label">ARBEITSWEISE</div>
       <button data-page="skills"><span>◇</span> Skills</button>
       <button data-page="integrations"><span>⊞</span> Integrationen</button>
       <button data-page="settings"><span>⚙</span> Einstellungen</button>
     </nav>
-    <div id="project-shortcuts" class="project-shortcuts"></div>
-    <div class="sidebar-bottom"><span class="avatar">DU</span><div>Mein Workspace<small>Nutzer & Agenten</small></div><form action="/logout" method="post"><input type="hidden" name="csrf" value="<?= \Todo\Application::h($csrf) ?>"><button title="Abmelden" aria-label="Abmelden">↪</button></form></div>
+    <div class="sidebar-bottom"><span class="avatar" aria-hidden="true">●</span><div><?= \Todo\Application::h($userName) ?><small>Nutzer & Agenten</small></div><form action="/logout" method="post"><input type="hidden" name="csrf" value="<?= \Todo\Application::h($csrf) ?>"><button title="Abmelden" aria-label="Abmelden">↪</button></form></div>
   </aside>
   <main class="main">
     <header class="topbar"><div class="breadcrumb">Mein Workspace <span>/</span> <span id="breadcrumb">Meine Aufmerksamkeit</span></div><span class="private-label"><i></i> Dein privater Arbeitsraum</span></header>
