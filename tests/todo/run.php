@@ -36,6 +36,12 @@ function task(Service $user, array $project, array $fields = []): array {
 }
 function input(array $t, array $extra = []): array { return $extra + ['task_id' => $t['id'], 'expected_version' => $t['version']]; }
 
+test('profile avatar uses first and last name initials', function () {
+    check(Todo\Application::initials('Demo Nutzer') === 'DN');
+    check(Todo\Application::initials('Anna Maria von Beispiel') === 'AB');
+    check(Todo\Application::initials('Madonna') === 'M');
+});
+
 test('users can create ready tasks atomically while agents must create drafts', function () {
     [$db,$u,$a,,$p] = fixture();
     $input=['project_id'=>$p['id'],'title'=>'Direkt bereit','status'=>'ready','idempotency_key'=>Support::id()];

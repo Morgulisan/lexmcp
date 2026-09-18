@@ -96,6 +96,7 @@ final class Application
             }
             if($path!=='/')throw new Failure('not_found','Nicht gefunden.',404);
             $userName=trim((string)$this->db->query('SELECT username FROM UserAccount WHERE ID=?',[$session['user']])->fetchColumn())?:'Mein Workspace';
+            $userInitials=self::initials($userName);
             $csrf=$session['csrf'];require dirname(__DIR__).'/views/app.php';
         }catch(Failure $error){
             if($error->status===401)header('WWW-Authenticate: Bearer resource_metadata="'.Config::url().'/.well-known/oauth-protected-resource", scope="todo:read"');
@@ -117,6 +118,18 @@ final class Application
     }
     private function json(mixed $value,int $status=200):void{http_response_code($status);header('Content-Type: application/json; charset=utf-8');echo Support::json($value);}
     public static function h(string $text):string{return htmlspecialchars($text,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');}
+    public static function initials(string $name):string
+    {
+        $parts=preg_split('/\s+/u',trim($name),-1,PREG_SPLIT_NO_EMPTY);
+        if(!$parts)return '';
+        $selected=count($parts)>1?[$parts[0],$parts[array_key_last($parts)]]:[$parts[0]];
+        $initials='';
+        foreach($selected as $part){
+            if(preg_match('/^\X/u',$part,$match)!==1)continue;
+            $initials.=function_exists('mb_strtoupper')?mb_strtoupper($match[0],'UTF-8'):strtoupper($match[0]);
+        }
+        return $initials;
+    }
     private function login(string $request=''):void
     {
         $nonce=$this->auth->issueLoginNonce();

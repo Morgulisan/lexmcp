@@ -17,7 +17,7 @@
       <button data-page="integrations"><span>⊞</span> Integrationen</button>
       <button data-page="settings"><span>⚙</span> Einstellungen</button>
     </nav>
-    <div class="sidebar-bottom"><span class="avatar" aria-hidden="true">●</span><div><?= \Todo\Application::h($userName) ?><small>Nutzer & Agenten</small></div><form action="/logout" method="post"><input type="hidden" name="csrf" value="<?= \Todo\Application::h($csrf) ?>"><button title="Abmelden" aria-label="Abmelden">↪</button></form></div>
+    <div class="sidebar-bottom"><span class="avatar" aria-hidden="true"><?= \Todo\Application::h($userInitials) ?></span><div><?= \Todo\Application::h($userName) ?><small>Nutzer & Agenten</small></div><form action="/logout" method="post"><input type="hidden" name="csrf" value="<?= \Todo\Application::h($csrf) ?>"><button title="Abmelden" aria-label="Abmelden">↪</button></form></div>
   </aside>
   <main class="main">
     <header class="topbar"><div class="breadcrumb">Mein Workspace <span>/</span> <span id="breadcrumb">Meine Aufmerksamkeit</span></div><span class="private-label"><i></i> Dein privater Arbeitsraum</span></header>
