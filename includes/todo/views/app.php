@@ -14,10 +14,10 @@
       <button data-page="activity"><span>↗</span> Agentenaktivität</button>
       <div class="nav-label">ARBEITSWEISE</div>
       <button data-page="skills"><span>◇</span> Skills</button>
-      <button data-page="integrations"><span>⊞</span> Integrationen</button>
+      <button data-page="integrations"><span>⊞</span> Werkzeuge</button>
       <button data-page="settings"><span>⚙</span> Einstellungen</button>
     </nav>
-    <div class="sidebar-bottom"><span class="avatar" aria-hidden="true"><?= \Todo\Application::h($userInitials) ?></span><div><?= \Todo\Application::h($userName) ?><small>Nutzer & Agenten</small></div><form action="/logout" method="post"><input type="hidden" name="csrf" value="<?= \Todo\Application::h($csrf) ?>"><button title="Abmelden" aria-label="Abmelden">↪</button></form></div>
+    <div class="sidebar-bottom"><span class="avatar" aria-hidden="true"><?= \Todo\Application::h($userInitials) ?></span><div><?= \Todo\Application::h($userName) ?><small>Nutzer & Agenten</small></div><form action="/logout" method="post"><input type="hidden" name="csrf" value="<?= \Todo\Application::h($csrf) ?>"><button class="logout-button" title="Abmelden" aria-label="Abmelden"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M10 4H5v16h5M14 8l4 4-4 4M9 12h9"/></svg></button></form></div>
   </aside>
   <main class="main">
     <header class="topbar"><div class="breadcrumb">Mein Workspace <span>/</span> <span id="breadcrumb">Meine Aufmerksamkeit</span></div><span class="private-label"><i></i> Dein privater Arbeitsraum</span></header>
