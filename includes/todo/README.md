@@ -6,13 +6,9 @@ Separate, abhängigkeitssfreie PHP-8.4-Anwendung für `todo.mopoliti.de` mit deu
 
 1. `html/todo.mopoliti.de/` einschließlich `.htaccess` als DocumentRoot bereitstellen; `includes/todo/` außerhalb des Webroots bereitstellen. `tests/` niemals veröffentlichen.
 2. PHP-Erweiterungen `pdo_mysql`, `mbstring`, `openssl`, `fileinfo`, `gd`, `zip` und `xmlreader` aktivieren. HTTPS am Webserver erzwingen, `display_errors=Off`, `post_max_size=12M`, `upload_max_filesize=10M`. Ein HTTPS-Reverse-Proxy darf Request-Inhalte und Authorization-Header nicht protokollieren. Keine öffentlich erreichbare HTTP-Alternative bereitstellen.
-3. Umgebungsvariablen aus `config/environment.example` im Hosting setzen. `TODO_OWNER_ID` ist die bestehende `UserAccount.ID` des einzigen V1-Nutzers. `TODO_DATABASE_INCLUDE` verweist auf die bereits vorhandene `/includes/api/sql.php`, die unverändert importiert wird und `connectToSQL(): PDO` liefert. Keine eigene Kopie und keine DB-Zugangsdaten im Projekt anlegen.
-4. Einen zufälligen 32-Byte-Schlüssel base64-codiert als `TODO_ENCRYPTION_KEY` in der privaten Hosting-Konfiguration hinterlegen. Der Schlüssel muss über Deployments stabil bleiben; verschlüsselte OAuth-Daten und Idempotenzantworten sind ohne ihn nicht lesbar. Datenbank und Schlüssel getrennt sichern.
-5. Migration einmal per CLI ausführen:
-
-   ```sh
-   php /includes/todo/bin/migrate.php
-   ```
+3. Die Anwendung verwendet ohne zusätzliche Konfiguration die bestehende `includes/api/sql.php`, `https://todo.mopoliti.de` und `data/todo.mopoliti.de`. Diese Pfade können über die optionalen Werte aus `config/environment.example` überschrieben werden. Alle erfolgreich über `UserAccount` angemeldeten Nutzer erhalten einen getrennten Workspace.
+4. Ohne `TODO_ENCRYPTION_KEY` wird beim ersten Start automatisch ein Schlüssel als `.encryption.key` im privaten Datenverzeichnis angelegt. Das Verzeichnis muss für PHP beschreibbar sein und darf nicht öffentlich erreichbar sein. Datenbank, Datenverzeichnis und Schlüssel gemeinsam sichern; ohne den ursprünglichen Schlüssel sind verschlüsselte OAuth-Daten und Idempotenzantworten nicht lesbar.
+5. Die Datenbanktabellen werden beim ersten HTTP-Aufruf automatisch und idempotent angelegt. `bin/migrate.php` bleibt nur als optionaler manueller Wartungsbefehl verfügbar.
 
 6. `/data/todo.mopoliti.de/` ausschließlich für den App-Benutzer zugänglich und beschreibbar anlegen. Der Standardpfad liegt relativ zur Installation unter `data/todo.mopoliti.de/`; `TODO_DATA_PATH` kann ihn überschreiben. Bei einer bestehenden Installation vorhandene Dateien aus dem alten Datenverzeichnis vor dem Umschalten übernehmen. ClamAV samt aktuellen Signaturen installieren und `TODO_MALWARE_SCANNER` auf den absoluten `clamscan`-Pfad setzen. Ohne erfolgreich abgeschlossene Prüfung werden Uploads abgewiesen. Der Scanner läuft mit Argumentliste, ohne Shell, und mit 30 Sekunden Zeitlimit.
 7. Jede Minute den Worker ausführen:

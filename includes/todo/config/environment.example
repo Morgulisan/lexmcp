@@ -1,9 +1,9 @@
 # Set these outside the repository and webroot. No credentials belong here.
 TODO_PUBLIC_URL=https://todo.mopoliti.de
-TODO_OWNER_ID=REPLACE_WITH_EXISTING_USERACCOUNT_ID
+# Optional overrides; defaults use the existing installation paths.
 TODO_DATABASE_INCLUDE=/includes/api/sql.php
 TODO_DATA_PATH=/data/todo.mopoliti.de
-# Generate 32 random bytes and inject their base64 encoding as a secret.
-TODO_ENCRYPTION_KEY=SET_OUTSIDE_REPOSITORY
+# Optional. Without this value a key is generated once in TODO_DATA_PATH.
+TODO_ENCRYPTION_KEY=
 # Absolute path to clamscan; uploads fail closed when missing or unhealthy.
 TODO_MALWARE_SCANNER=/usr/bin/clamscan

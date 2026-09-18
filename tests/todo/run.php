@@ -4,7 +4,7 @@ declare(strict_types=1);
 require dirname(__DIR__, 2) . '/includes/todo/autoload.php';
 set_error_handler(static function (int $severity, string $message, string $file, int $line): never { throw new ErrorException($message, 0, $severity, $file, $line); });
 
-use Todo\{Actor, Crypto, Database, Failure, Policy, Service, Support};
+use Todo\{Actor, Config, Crypto, Database, Failure, Policy, Service, Support};
 
 $passed = 0; $failed = 0;
 function check(bool $value, string $message = 'Assertion failed'): void { if (!$value) throw new RuntimeException($message); }
@@ -47,6 +47,31 @@ test('database migration is idempotent and preserves existing data', function ()
 
     check($db->query("SELECT name,policy_json,revision FROM todo_workspaces WHERE id=?", [$workspace])->fetch() === $before, 'Repeated migration changed existing data.');
     check($db->query("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'todo_%' ORDER BY name")->fetchAll(PDO::FETCH_COLUMN) === $tablesBefore, 'Repeated migration changed the schema inventory.');
+});
+
+test('encryption key is generated once and reused without configuration', function () {
+    $directory = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'todo-key-' . bin2hex(random_bytes(8));
+    $oldPath = getenv('TODO_DATA_PATH');$oldKey = getenv('TODO_ENCRYPTION_KEY');
+    try {
+        putenv('TODO_DATA_PATH=' . $directory);putenv('TODO_ENCRYPTION_KEY');
+        $cipher = Config::crypto()->encrypt(['ready' => true], 'test');
+        check(Config::crypto()->decrypt($cipher, 'test') === ['ready' => true]);
+        check(is_file($directory . DIRECTORY_SEPARATOR . '.encryption.key'));
+    } finally {
+        $oldPath === false ? putenv('TODO_DATA_PATH') : putenv('TODO_DATA_PATH=' . $oldPath);
+        $oldKey === false ? putenv('TODO_ENCRYPTION_KEY') : putenv('TODO_ENCRYPTION_KEY=' . $oldKey);
+        $keyFile=$directory.DIRECTORY_SEPARATOR.'.encryption.key';if(is_file($keyFile))unlink($keyFile);if(is_dir($directory))rmdir($directory);
+    }
+});
+
+test('login nonces are independent and single use', function () {
+    $db=new Database(new PDO('sqlite::memory:'));$db->migrate();
+    $db->pdo->exec('CREATE TABLE UserAccount (ID INTEGER PRIMARY KEY,email TEXT,passwordHash TEXT)');
+    $auth=new Todo\Auth($db,new Crypto(random_bytes(32)));$first=$auth->issueLoginNonce();$second=$auth->issueLoginNonce();
+    check($first!==$second);
+    rejects('login_failed',fn()=>$auth->login(['nonce'=>$first,'mail'=>'nobody@example.invalid','password'=>'invalid']));
+    rejects('csrf',fn()=>$auth->login(['nonce'=>$first,'mail'=>'nobody@example.invalid','password'=>'invalid']));
+    rejects('login_failed',fn()=>$auth->login(['nonce'=>$second,'mail'=>'nobody@example.invalid','password'=>'invalid']));
 });
 
 test('exclusive claims, stale versions and idempotent retry', function () {

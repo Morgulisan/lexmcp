@@ -160,10 +160,17 @@ final class Auth
         $raw=$_COOKIE['todo_session']??'';
         return is_string($raw)&&preg_match('/^[a-f0-9]{64}$/D',$raw)?$this->get('web',hash('sha256',$raw)):null;
     }
+    public function issueLoginNonce(): string
+    {
+        $nonce=bin2hex(random_bytes(32));
+        $this->put('login_nonce',hash('sha256',$nonce),['issued_at'=>time()],600);
+        return $nonce;
+    }
     public function login(array $input): void
     {
-        $nonce=$_COOKIE['todo_login_nonce']??'';
-        if (!is_string($nonce)||$nonce===''||!is_string($input['nonce']??null)||!hash_equals($nonce,$input['nonce'])) throw new Failure('csrf','Ungültiger Formularschlüssel.',403);
+        $nonce=$input['nonce']??'';
+        if(!is_string($nonce)||!preg_match('/^[a-f0-9]{64}$/D',$nonce)||$this->get('login_nonce',hash('sha256',$nonce))===null)throw new Failure('csrf','Ungültiger Formularschlüssel.',403);
+        $this->db->query('DELETE FROM todo_auth WHERE kind=? AND id=?',['login_nonce',hash('sha256',$nonce)]);
         $legacy=$input['legacy_token']??'';
         if (is_string($legacy)&&str_starts_with($legacy,'MST:')&&strlen($legacy)<=4096) $user=$this->db->query('SELECT user_id FROM access_tokens WHERE access_token=? AND expires>NOW()',[$legacy])->fetchColumn();
         else {
@@ -172,7 +179,7 @@ final class Auth
             $user=$this->db->query('SELECT ID FROM UserAccount WHERE email=? AND passwordHash=? LIMIT 1',[$mail,$hash])->fetchColumn();
             unset($password,$hash);
         }
-        if ($user===false||(int)$user!==Config::owner()) throw new Failure('login_failed','Anmeldung fehlgeschlagen.',401);
+        if ($user===false) throw new Failure('login_failed','Anmeldung fehlgeschlagen.',401);
         $token=bin2hex(random_bytes(32));$this->put('web',hash('sha256',$token),['user'=>(int)$user,'csrf'=>bin2hex(random_bytes(32))],43200);
         setcookie('todo_session',$token,['expires'=>time()+43200,'path'=>'/','secure'=>true,'httponly'=>true,'samesite'=>'Lax']);
         $_COOKIE['todo_session']=$token;

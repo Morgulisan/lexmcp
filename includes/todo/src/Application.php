@@ -19,7 +19,7 @@ final class Application
             $path=parse_url($_SERVER['REQUEST_URI']??'/',PHP_URL_PATH);$method=$_SERVER['REQUEST_METHOD']??'GET';
             $this->auth->limit('ip:'.($_SERVER['REMOTE_ADDR']??'unknown'),300);
             $origin=$_SERVER['HTTP_ORIGIN']??null;
-            if($origin!==null&&$origin!==Config::url())throw new Failure('origin_denied','Unzulässige Herkunft.',403);
+            if($origin!==null&&$origin!=='null'&&!$this->originAllowed($origin))throw new Failure('origin_denied','Unzulässige Herkunft.',403);
             if($method==='OPTIONS'){header('Allow: GET, POST, OPTIONS');http_response_code(204);return;}
             if(str_starts_with($path,'/.well-known/')){
                 if($method!=='GET')throw new Failure('method_not_allowed','GET erforderlich.',405);
@@ -114,9 +114,28 @@ final class Application
     public static function h(string $text):string{return htmlspecialchars($text,ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8');}
     private function login(string $request=''):void
     {
-        $nonce=bin2hex(random_bytes(32));setcookie('todo_login_nonce',$nonce,['expires'=>time()+600,'path'=>'/','secure'=>true,'httponly'=>true,'samesite'=>'Lax']);
+        $nonce=$this->auth->issueLoginNonce();
         $h=self::h(...);
         echo '<!doctype html><html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Anmelden · Gemeinsam</title><link rel="stylesheet" href="/assets/app.css"><body class="auth-page"><main class="auth-card"><div class="brand">g<span>Gemeinsam</span></div><h1>Ein Ort für alles,<br>was vorangeht.</h1><p>Deine Aufgaben. Deine Agenten. Gemeinsam erledigt.</p><form action="/login" method="post"><input type="hidden" name="nonce" value="'.$h($nonce).'"><input type="hidden" name="request_id" value="'.$h($request).'"><label>E-Mail<input name="mail" type="email" autocomplete="username"></label><label>Passwort<input name="password" type="password" autocomplete="current-password"></label><details><summary>Mit bestehendem MST-Token anmelden</summary><label>MST-Token<input name="legacy_token" type="password" autocomplete="off"></label></details><button class="primary">Anmelden</button></form><small>Mit deinem bestehenden zentralen Benutzerkonto.</small></main></body></html>';
+    }
+    private function originAllowed(string $origin):bool
+    {
+        $normalize=static function(string $url):?string{
+            $parts=parse_url($url);if(!is_array($parts)||!isset($parts['scheme'],$parts['host']))return null;
+            $scheme=strtolower($parts['scheme']);if(!in_array($scheme,['http','https'],true))return null;
+            $host=strtolower(rtrim($parts['host'],'.'));$port=$parts['port']??null;
+            if(($scheme==='https'&&$port===443)||($scheme==='http'&&$port===80))$port=null;
+            return $scheme.'://'.$host.($port===null?'':':'.$port);
+        };
+        $actual=$normalize($origin);if($actual===null)return false;
+        $allowed=[$normalize(Config::url())];
+        $host=$_SERVER['HTTP_HOST']??'';
+        if(is_string($host)&&preg_match('/^(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:]+\])(?::\d{1,5})?$/D',$host)){
+            $forwarded=strtolower(trim(explode(',',(string)($_SERVER['HTTP_X_FORWARDED_PROTO']??''))[0]));
+            $scheme=$forwarded==='https'||(!empty($_SERVER['HTTPS'])&&strtolower((string)$_SERVER['HTTPS'])!=='off')?'https':'http';
+            $allowed[]=$normalize($scheme.'://'.$host);
+        }
+        return in_array($actual,$allowed,true);
     }
     private function consentPage(array $request,array $session,array $projects):void
     {
