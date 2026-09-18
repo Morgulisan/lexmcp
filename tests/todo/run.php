@@ -60,6 +60,10 @@ test('generated capabilities are unique and idempotent with descriptions', funct
     check($first === $u->mutate('capability_save', $input));
     check($first['description'] === 'Dateien lesen');
     check($first['id'] !== change($u,'capability_save',['name'=>'Drive'])['id']);
+    $updated = change($u,'capability_save',['id'=>$first['id'],'expected_version'=>$first['version'],'name'=>'Drive Ablage','description'=>'Dateien lesen und ablegen']);
+    check($updated['id'] === $first['id'] && $updated['version'] === 2);
+    check($updated['name'] === 'Drive Ablage' && $updated['description'] === 'Dateien lesen und ablegen');
+    rejects('version_conflict', fn()=>change($u,'capability_save',['id'=>$first['id'],'expected_version'=>$first['version'],'name'=>'Veraltet']));
 });
 test('date-only tasks use project timezone and include the whole due day across DST', function () {
     [$db,$u,$a,$b,$p] = fixture();
@@ -200,6 +204,15 @@ test('capability filtering includes pinned skill requirements',function(){
     $t=task($u,$p,['skill_ids'=>[$skill['id']]]);
     check($a->read('tasks',['compatible'=>true])['total']===0);
     rejects('capability_missing',fn()=>change($a,'claim',input($t)));
+});
+test('projectless skills can be created and assigned across projects',function(){
+    [$db,$u,$a,$b,$p]=fixture();change($u,'capability_save',['id'=>'drive','name'=>'Drive']);
+    $skill=change($u,'skill_save',['project_id'=>null,'slug'=>'recherche','name'=>'Recherche','content'=>'Quellen prüfen.','capabilities'=>['drive']]);
+    check($skill['project_id']===null && $skill['sequence']===1);
+    check(count($a->read('skills'))===1);
+    $t=task($u,$p,['skill_ids'=>[$skill['id']]]);
+    check($t['skill_ids']===[$skill['id']]);
+    rejects('user_only',fn()=>change($a,'skill_save',['project_id'=>null,'slug'=>'global-agent','name'=>'Global','content'=>'Nicht erlaubt.']));
 });
 test('revocation invalidates existing actor and releases leases',function(){
     [$db,$u,$a,$b,$p]=fixture();$t=task($u,$p);change($a,'claim',input($t));

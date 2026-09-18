@@ -9,19 +9,26 @@ trait CatalogActions
     {
         $query = mb_strtolower((string)($input['query'] ?? ''));
         return array_values(array_filter($this->db->entities($this->workspace, 'skill'), function ($s) use ($query, $input) {
-            return ($this->actor->isUser() || in_array($s['project_id'], $this->actor->projects, true))
+            return ($this->actor->isUser() || $s['project_id'] === null || in_array($s['project_id'], $this->actor->projects, true))
                 && (!isset($input['id']) || $s['id'] === $input['id'])
                 && ($query === '' || str_contains(mb_strtolower($s['name'] . ' ' . $s['slug']), $query));
         }));
     }
     private function saveSkill(array $input): array
     {
-        $project = $this->project(Support::text($input, 'project_id', 32));
-        $this->enforce('draft', ['id' => 'skill-draft', 'project_id' => $project['id'], 'risk' => 1, 'priority' => 3, 'policy' => []]);
+        $projectId = $input['project_id'] ?? null;
+        if ($projectId === '') $projectId = null;
+        if ($projectId !== null) {
+            $project = $this->project(Support::text(['project_id' => $projectId], 'project_id', 32));
+            $projectId = $project['id'];
+            $this->enforce('draft', ['id' => 'skill-draft', 'project_id' => $projectId, 'risk' => 1, 'priority' => 3, 'policy' => []]);
+        } else {
+            $this->actor->userOnly();
+        }
         $slug = Support::text($input, 'slug', 100);
         if (!preg_match('/^[a-z0-9]+(?:-[a-z0-9]+)*$/D', $slug)) throw new Failure('invalid_slug', 'Skill-Slug ist ungültig.');
         $sequence = 1; $latest = null;
-        foreach ($this->db->entities($this->workspace, 'skill') as $skill) if ($skill['project_id'] === $project['id'] && $skill['slug'] === $slug) {
+        foreach ($this->db->entities($this->workspace, 'skill') as $skill) if ($skill['project_id'] === $projectId && $skill['slug'] === $slug) {
             $sequence = max($sequence, $skill['sequence'] + 1);
             if ($latest === null || $skill['sequence'] > $latest['sequence']) $latest = $skill;
         }
@@ -36,7 +43,7 @@ trait CatalogActions
         $latestCaps = $latest['capabilities'] ?? [];
         sort($latestCaps);
         if ($latest !== null && $latest['name'] === $name && $latest['content'] === $content && $latestCaps === $sameCaps && $latest['draft'] === $draft) return $latest;
-        $skill = ['id' => Support::id(), 'version' => 1, 'sequence' => $sequence, 'project_id' => $project['id'], 'slug' => $slug, 'name' => $name, 'content' => $content, 'capabilities' => $caps, 'draft' => $draft, 'author' => $this->actor->key(), 'created_at' => $this->now()];
+        $skill = ['id' => Support::id(), 'version' => 1, 'sequence' => $sequence, 'project_id' => $projectId, 'slug' => $slug, 'name' => $name, 'content' => $content, 'capabilities' => $caps, 'draft' => $draft, 'author' => $this->actor->key(), 'created_at' => $this->now()];
         $this->db->saveEntity($this->workspace, 'skill', $skill);
         $this->audit('skill_save', null, ['id' => $skill['id'], 'sequence' => $sequence, 'draft' => $skill['draft']]);
         return $skill;

@@ -249,8 +249,8 @@ final class Service
         foreach ($task['capabilities'] as $id) $this->db->entity($this->workspace, 'capability', $id);
         foreach ($task['skill_ids'] as $id) {
             $skill = $this->db->entity($this->workspace, 'skill', $id);
-            $this->actor->project($skill['project_id']);
-            if ($skill['project_id'] !== $task['project_id'] || $skill['draft']) throw new Failure('invalid_skill', 'Nur veröffentlichte Skills desselben Projekts sind zuweisbar.');
+            if ($skill['project_id'] !== null) $this->actor->project($skill['project_id']);
+            if (($skill['project_id'] !== null && $skill['project_id'] !== $task['project_id']) || $skill['draft']) throw new Failure('invalid_skill', 'Nur veröffentlichte projektübergreifende Skills oder Skills desselben Projekts sind zuweisbar.');
         }
         Support::noSecrets($task['title'] . '\n' . $task['description']);
         return $task;
