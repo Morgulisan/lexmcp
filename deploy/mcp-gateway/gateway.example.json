@@ -1,0 +1,23 @@
+{
+  "listen": "127.0.0.1",
+  "port": 8787,
+  "session_secret_file": "/run/secrets/session-key",
+  "services": [
+    {
+      "resource": "https://whtspp.mopoliti.de/mcp",
+      "issuer": "https://auth.mopoliti.de/whtspp",
+      "upstream": "http://127.0.0.1:3000/mcp",
+      "gateway_client_id": "gateway-whtspp",
+      "gateway_secret_file": "/run/secrets/introspection-whtspp",
+      "auth_header": "x-api-key"
+    },
+    {
+      "resource": "https://obsdn.mopoliti.de/mcp",
+      "issuer": "https://auth.mopoliti.de/obsdn",
+      "upstream": "http://127.0.0.1:8000/mcp",
+      "gateway_client_id": "gateway-obsdn",
+      "gateway_secret_file": "/run/secrets/introspection-obsdn",
+      "auth_header": "authorization"
+    }
+  ]
+}

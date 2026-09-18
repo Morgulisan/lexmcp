@@ -208,3 +208,7 @@ Die Integrationstests verwenden ausschließlich eine separate Testdatenbank. Der
 - Remote-Dateien: HTTPS, Host-Allowlist, öffentliche DNS-Adressen, keine Redirects, maximal 4.500.000 Bytes (4,5 MB). Ohne `LEXMCP_REMOTE_FILE_HOSTS` sind `drive.google.com`, `*.mopoliti.de`, `*.sldo.de`, `*.tecis.de` und `*crm.vertrieb-plattform.de` erlaubt. `*.domain` umfasst beliebig tiefe Subdomains, nicht die Hauptdomain; `*crm.vertrieb-plattform.de` umfasst auch `crm.vertrieb-plattform.de` und Hostnamen mit Präfix vor `crm`. Wildcards sind ausschließlich am Anfang zulässig; eine gesetzte Liste ersetzt diesen Standard, ein explizit leerer Wert deaktiviert URL-Uploads. Bei bestehender Konfiguration die gewünschten Standardfreigaben zur kommagetrennten Liste hinzufügen. Die URL muss ohne Anmeldung direkt Dateibytes liefern; Vorschau-, Anmelde- und Weiterleitungsseiten lassen sich damit nicht importieren. In diesem Fall die Datei lokal herunterladen und `prepare_upload` verwenden.
 - OAuth und kritische Aktionen: getrennte Scopes und technische Schalter.
 - Dauerhafte Sicherheits- und Queuezustände: MySQL, nicht `/data`.
+
+## Zentrale OAuth-Anmeldung für weitere MCP-Dienste
+
+Der separate Dienst auf auth.mopoliti.de und das Docker-Gateway für WhatsApp/Obsidian sind in [docs/mcp-oauth.md](docs/mcp-oauth.md) dokumentiert. Den tatsächlich ausgeführten Stand und noch offene Aktivierungsschritte enthält [docs/mcp-oauth-status.md](docs/mcp-oauth-status.md).

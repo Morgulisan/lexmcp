@@ -5,7 +5,7 @@ Sicherheitsprobleme dürfen keine API-Keys, Tokens, Belege oder personenbezogene
 ## Secret-Regeln
 
 - Keine Secrets im Repository, Webroot, in URLs oder Logs.
-- Produktionsschlüssel werden ausschließlich als Server-Umgebungsvariablen bereitgestellt.
+- Masterkeys werden als Server-Umgebungsvariablen oder in geschützten privaten Dateien außerhalb des Webroots bereitgestellt. Sie dürfen nicht im Repository oder in der Datenbank liegen. MCP-Benutzerkeys werden ausschließlich authentifiziert verschlüsselt in der Datenbank gespeichert; siehe docs/mcp-oauth.md.
 - Bei vermutetem Verlust: Lexware-Key im Lexware-Account ersetzen, OAuth-Tokenfamilien widerrufen und beide MCP-Masterkeys kontrolliert rotieren.
 
 ## Kritische Operationen

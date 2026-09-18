@@ -7,3 +7,8 @@
 !/data/todo.mopoliti.de/.gitkeep
 /.idea/
 *.log
+
+/data/mcp-auth/
+/deploy/mcp-gateway/secrets/
+/deploy/mcp-gateway/auth-config.php
+/includes/mcp-auth/config/local.php
