@@ -164,7 +164,7 @@ trait CatalogActions
     {
         $this->actor->userOnly();
         $counts = $this->db->transaction($this->workspace, function (): array {
-            $counts = ['expired_claims' => 0, 'recurrences' => 0];
+            $counts = ['expired_claims' => 0, 'overdue_priorities' => 0, 'recurrences' => 0];
             foreach ($this->db->tasks($this->workspace) as $task) {
                 if ($task['claim'] !== null && $task['claim']['expires_at'] <= $this->now()) {
                     $task['claim'] = null;
@@ -173,6 +173,20 @@ trait CatalogActions
                     $this->db->saveTask($this->workspace, $task);
                     $this->audit('claim_expired', $task['id'], ['version' => $task['version']]);
                     $counts['expired_claims']++;
+                }
+                if ($task['archived_at'] === null
+                    && !in_array($task['status'], ['done', 'cancelled'], true)
+                    && $task['due_at'] !== null
+                    && $task['due_at'] < $this->now()
+                    && $task['priority'] < 5
+                ) {
+                    $before = $task['priority'];
+                    $task['priority'] = 5;
+                    $task['version']++;
+                    $task['updated_at'] = $this->now();
+                    $this->db->saveTask($this->workspace, $task);
+                    $this->audit('overdue_priority_raised', $task['id'], ['before' => $before, 'after' => 5, 'version' => $task['version']]);
+                    $counts['overdue_priorities']++;
                 }
                 if ($task['archived_at'] !== null || $task['status'] === 'cancelled' || $task['recurrence'] === null || $task['recurrence_source'] !== null || $task['due_at'] === null) continue;
                 $anchor = (new \DateTimeImmutable('@' . $task['due_at']))->setTimezone(new \DateTimeZone($task['timezone']));

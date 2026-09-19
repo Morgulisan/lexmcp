@@ -42,6 +42,19 @@ test('profile avatar uses first and last name initials', function () {
     check(Todo\Application::initials('Madonna') === 'M');
 });
 
+test('general IDs use ten base62 characters', function () {
+    $id = Support::id();
+    check(strlen($id) === 10);
+    check((bool)preg_match('/^[A-Za-z0-9]{10}$/D', $id));
+});
+
+test('new projects use eight-character IDs', function () {
+    [,$user] = fixture();
+    $project = change($user, 'project_save', ['name' => 'Kurze ID']);
+    check(strlen($project['id']) === 8);
+    check((bool)preg_match('/^[A-Za-z0-9]{8}$/D', $project['id']));
+});
+
 test('users can create ready tasks atomically while agents must create drafts', function () {
     [$db,$u,$a,,$p] = fixture();
     $input=['project_id'=>$p['id'],'title'=>'Direkt bereit','status'=>'ready','idempotency_key'=>Support::id()];
@@ -51,6 +64,69 @@ test('users can create ready tasks atomically while agents must create drafts', 
     check(change($u,'task_create',['project_id'=>$p['id'],'title'=>'Entwurf','status'=>'draft'])['status']==='draft');
     rejects('invalid_transition',fn()=>change($u,'task_create',['project_id'=>$p['id'],'title'=>'Ungültig','status'=>'done']));
     rejects('user_only',fn()=>change($a,'task_create',['project_id'=>$p['id'],'title'=>'Agent','status'=>'ready']));
+});
+
+test('users can complete tasks without an outcome while agents still provide one', function () {
+    [$db,$u,$a,,$p] = fixture();
+    $userTask = task($u,$p);
+    $completed = change($u,'complete',input($userTask));
+    check($completed['task']['status']==='done');
+    check($u->read('task',['task_id'=>$userTask['id']])['comments']===[]);
+
+    $agentTask = task($u,$p);
+    $claim = change($a,'claim',input($agentTask));
+    rejects('invalid_field',fn()=>change($a,'complete',input($claim['task'],['claim_token'=>$claim['claim_token'],'content'=>''])));
+});
+
+test('commenting a completed task can reopen it atomically', function () {
+    [$db,$u,$a,,$p] = fixture();
+    $completed = change($u,'complete',input(task($u,$p)))['task'];
+    $reopened = change($u,'reopen',input($completed,['content'=>'Bitte noch einmal prüfen.']));
+    check($reopened['task']['status']==='ready');
+    check($reopened['comment']['content']==='Bitte noch einmal prüfen.');
+    check($u->read('task',['task_id'=>$completed['id']])['comments'][0]['type']==='general');
+    rejects('invalid_transition',fn()=>change($u,'reopen',input($reopened['task'],['content'=>'Noch einmal.'])));
+    $completedAgain = change($u,'complete',input($reopened['task']))['task'];
+    rejects('invalid_field',fn()=>change($a,'reopen',input($completedAgain,['content'=>'   '])));
+    $agentReopened = change($a,'reopen',input($completedAgain,['content'=>'Die Abnahme hat einen Fehler gezeigt.']));
+    check($agentReopened['task']['status']==='ready');
+    check($agentReopened['comment']['author']===$a->actor->key());
+});
+
+test('approved parent plan lets its claiming agent create ready subtasks', function () {
+    [$db,$u,$a,,$p] = fixture();
+    $parent = task($u,$p,['risk'=>2]);
+    $claim = change($a,'claim',input($parent));
+    rejects('approval_required',fn()=>change($a,'task_create',[
+        'project_id'=>$p['id'],'parent_id'=>$parent['id'],'title'=>'Zu früh','status'=>'ready',
+        'expected_version'=>$claim['task']['version'],'claim_token'=>$claim['claim_token'],
+    ]));
+    $plan = change($a,'plan_submit',input($claim['task'],[
+        'claim_token'=>$claim['claim_token'],'content'=>'Freigegebene Unteraufgaben erstellen.','actions'=>['create_subtasks'],'risk'=>3,
+    ]));
+    $approved = change($u,'approve_plan',input($plan['task'],['plan_id'=>$plan['plan']['id'],'approve'=>true]));
+    $claim = change($a,'claim',input($approved['task']));
+    $child = change($a,'task_create',[
+        'project_id'=>$p['id'],'parent_id'=>$parent['id'],'title'=>'Freigegeben','status'=>'ready','risk'=>3,
+        'expected_version'=>$claim['task']['version'],'claim_token'=>$claim['claim_token'],
+    ]);
+    check($child['status']==='ready' && $child['parent_id']===$parent['id']);
+    rejects('approval_required',fn()=>change($a,'task_create',[
+        'project_id'=>$p['id'],'parent_id'=>$parent['id'],'title'=>'Risiko zu hoch','status'=>'ready','risk'=>4,
+        'expected_version'=>$claim['task']['version'],'claim_token'=>$claim['claim_token'],
+    ]));
+});
+
+test('operation status stays conclusive when its stored response is unavailable', function () {
+    [$db,$u,$a,,$p] = fixture();
+    $key = Support::id();
+    $input = ['project_id'=>$p['id'],'title'=>'Gespeichert','idempotency_key'=>$key];
+    $created = $a->mutate('task_create',$input);
+    $db->query('UPDATE todo_operations SET response_cipher=? WHERE workspace_id=? AND actor_id=? AND operation_key=?', ['invalid',$a->workspace,$a->actor->key(),$key]);
+    $operation = $a->read('operation',['idempotency_key'=>$key]);
+    check($operation === ['state'=>'completed','result'=>null,'response_unavailable'=>true]);
+    rejects('operation_response_unavailable',fn()=>$a->mutate('task_create',$input));
+    check($u->read('task',['task_id'=>$created['id']])['task']['id']===$created['id']);
 });
 
 test('generated capabilities are unique and idempotent with descriptions', function () {
@@ -167,6 +243,19 @@ test('higher priority numbers sort first',function(){
     [$db,$u,$a,$b,$p]=fixture();task($u,$p,['title'=>'Niedrig','priority'=>1]);task($u,$p,['title'=>'Hoch','priority'=>5]);
     $items=$u->read('tasks')['items'];check($items[0]['title']==='Hoch');
 });
+test('maintenance raises overdue open tasks to priority five',function(){
+    $f=fixture();[$db,$u,$a,$b,$p]=$f;
+    $overdue=task($u,$p,['title'=>'Überfällig','priority'=>2,'due_at'=>$f[5]-1]);
+    $future=task($u,$p,['title'=>'Später','priority'=>2,'due_at'=>$f[5]+1]);
+    $done=change($u,'complete',input(task($u,$p,['title'=>'Erledigt','priority'=>2,'due_at'=>$f[5]-1])))['task'];
+    $counts=$u->maintenance();
+    check($counts['overdue_priorities']===1);
+    $raised=$u->read('task',['task_id'=>$overdue['id']])['task'];
+    check($raised['priority']===5 && $raised['version']===$overdue['version']+1);
+    check($u->read('task',['task_id'=>$future['id']])['task']['priority']===2);
+    check($u->read('task',['task_id'=>$done['id']])['task']['priority']===2);
+    check($u->maintenance()['overdue_priorities']===0);
+});
 test('questions release claims and answers return task to ready',function(){
     [$db,$u,$a,$b,$p]=fixture();$t=task($u,$p);$c=change($a,'claim',input($t));
     $q=change($a,'question',input($c['task'],['claim_token'=>$c['claim_token'],'content'=>'Welches Ergebnis?']));
@@ -187,6 +276,17 @@ test('plan approval is user-only and superseded versions do not authorize work',
     $ready=change($u,'update',input($next['task'],['status'=>'ready']));
     $c=change($a,'claim',input($ready['task']));
     rejects('approval_required',fn()=>change($a,'complete',input($c['task'],['claim_token'=>$c['claim_token'],'content'=>'Erledigt'])));
+});
+test('plan approval feedback is optional but requested changes require text',function(){
+    [$db,$u,$a,$b,$p]=fixture();$t=task($u,$p);$c=change($a,'claim',input($t));
+    $plan=change($a,'plan_submit',input($c['task'],['claim_token'=>$c['claim_token'],'content'=>'Erster Plan.']));
+    rejects('invalid_field',fn()=>change($u,'approve_plan',input($plan['task'],['plan_id'=>$plan['plan']['id'],'approve'=>false,'feedback'=>'   '])));
+    $changed=change($u,'approve_plan',input($plan['task'],['plan_id'=>$plan['plan']['id'],'approve'=>false,'feedback'=>'Bitte den zweiten Schritt ändern.']));
+    check($changed['task']['status']==='ready');
+    $c=change($a,'claim',input($changed['task']));
+    $next=change($a,'plan_submit',input($c['task'],['claim_token'=>$c['claim_token'],'content'=>'Überarbeiteter Plan.']));
+    $approved=change($u,'approve_plan',input($next['task'],['plan_id'=>$next['plan']['id'],'approve'=>true]));
+    check($approved['task']['status']==='ready');
 });
 test('dependency cycles rejected, real child created and claims blocked until done',function(){
     [$db,$u,$a,$b,$p]=fixture();$one=task($u,$p);$two=task($u,$p);
@@ -292,6 +392,18 @@ test('MCP catalog is compact and hidden aliases remain callable',function(){
     $agent=['id'=>'mcp-agent','version'=>1,'client_id'=>'test-client','projects'=>[$p['id']],'scopes'=>['todo:read','todo:write'],'revoked_at'=>null];$db->saveEntity($u->workspace,'agent',$agent);
     $token=bin2hex(random_bytes(32));$auth->put('access',hash('sha256',$token),['user'=>42,'agent_id'=>$agent['id'],'client_id'=>'test-client'],600);
     $mcp=new Todo\Mcp($db,$crypto,$auth,'mcp-test');check(count($mcp->tools())===5);
+    $tools=[];foreach($mcp->tools() as $tool)$tools[$tool['name']]=$tool;
+    check(in_array('reopen',$tools['todo_collaborate']['inputSchema']['properties']['action']['enum'],true));
+    check(str_contains($tools['todo_task']['description'],'niemals mit aktivem Claim beenden'));
+    check(str_contains($tools['todo_collaborate']['description'],'niemals Nutzerfragen'));
+    check(str_contains($tools['todo_collaborate']['description'],'kein weiteres ToDo'));
+    check(str_contains($tools['todo_collaborate']['description'],'mit review_request an den Nutzer zurückgeben'));
+    check(str_contains($tools['todo_session']['description'],'tatsächlich verwendbar'));
+    $initialized=$mcp->handle(['jsonrpc'=>'2.0','id'=>0,'method'=>'initialize','params'=>['protocolVersion'=>'2025-11-25']],'Bearer '.$token);
+    check(str_contains($initialized['result']['instructions'],'sofort release'));
+    check(str_contains($initialized['result']['instructions'],'Timeout ist nur eine Ausfallsicherung'));
+    check(str_contains($initialized['result']['instructions'],'kein weiteres ToDo'));
+    check(str_contains($initialized['result']['instructions'],'per review_request zurückgeben'));
     $t=task($u,$p);
     $response=$mcp->handle(['jsonrpc'=>'2.0','id'=>1,'method'=>'tools/call','params'=>['name'=>'read_task_memory','arguments'=>['task_id'=>$t['id']]]],'Bearer '.$token);
     check($response['result']['isError']===false);

@@ -5,7 +5,7 @@ namespace Todo;
 
 final class Policy
 {
-    public const ACTIONS = ['read','comment','draft','claim','update','memory','plan','complete','external','destructive'];
+    public const ACTIONS = ['read','comment','draft','create_subtasks','claim','update','memory','plan','complete','external','destructive'];
     public static function validate(mixed $rules): array
     {
         if (!is_array($rules) || !array_is_list($rules) || count($rules) > 50) throw new Failure('invalid_policy', 'Ungültige Policy.');
@@ -20,7 +20,7 @@ final class Policy
     /** Restrictions only accumulate: a lower-level allow never removes an upper-level requirement. */
     public static function decision(string $action, Actor $actor, array $task, array ...$levels): string
     {
-        $decision = (in_array($action, ['external','destructive'], true) || (($task['risk'] ?? 1) >= 4 && in_array($action, ['update','complete'], true))) ? 'approval' : 'allow';
+        $decision = (in_array($action, ['create_subtasks','external','destructive'], true) || (($task['risk'] ?? 1) >= 4 && in_array($action, ['update','complete'], true))) ? 'approval' : 'allow';
         foreach ($levels as $rules) foreach ($rules as $rule) {
             if ($rule['action'] !== '*' && $rule['action'] !== $action) continue;
             if (isset($rule['agent']) && $rule['agent'] !== $actor->agent) continue;

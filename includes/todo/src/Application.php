@@ -102,7 +102,10 @@ final class Application
             if($error->status===401)header('WWW-Authenticate: Bearer resource_metadata="'.Config::url().'/.well-known/oauth-protected-resource", scope="todo:read"');
             if($error->status===429)header('Retry-After: 60');
             $this->json(['error'=>$error->reason,'message'=>$error->getMessage(),'request_id'=>$this->requestId],$error->status);
-        }catch(\Throwable){$this->json(['error'=>'internal_error','message'=>'Anfrage konnte nicht verarbeitet werden.','request_id'=>$this->requestId],500);}
+        }catch(\Throwable $error){
+            error_log('[todo application] request='.$this->requestId.' error='.$error::class.': '.$error->getMessage());
+            $this->json(['error'=>'internal_error','message'=>'Anfrage konnte nicht verarbeitet werden.','request_id'=>$this->requestId],500);
+        }
     }
     private function post(string $method): void {if($method!=='POST'){header('Allow: POST');throw new Failure('method_not_allowed','POST erforderlich.',405);}}
     private function body(): array

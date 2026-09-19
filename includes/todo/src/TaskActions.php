@@ -14,7 +14,7 @@ trait TaskActions
         $extra = [];
         $userActions = ['approve_plan','review_decide','answer','delete','archive','restore','cancel','takeover'];
         if (in_array($action, $userActions, true)) $this->actor->userOnly();
-        if (!in_array($action, ['claim','comment','comment_update'], true)) $this->requireClaim($task, $input);
+        if (!in_array($action, ['claim','comment','comment_update','reopen'], true)) $this->requireClaim($task, $input);
         switch ($action) {
             case 'update':
                 foreach (['priority','risk','effort'] as $field) if (!$this->actor->isUser() && isset($input[$field]) && $input[$field] !== $task[$field]) {
@@ -89,6 +89,14 @@ trait TaskActions
                 if (!in_array($type, self::COMMENTS, true) || $type === 'question') throw new Failure('invalid_type', 'Rückfragen über question stellen; Kommentar-Typ prüfen.');
                 $extra['comment'] = $this->addComment($task, $type, Support::text($input, 'content', 10000));
                 break;
+            case 'reopen':
+                if ($task['status'] !== 'done') throw new Failure('invalid_transition', 'Nur erledigte Aufgaben können wieder geöffnet werden.', 409);
+                if (!$this->actor->isUser() && (!is_string($input['content'] ?? null) || trim($input['content']) === '')) throw new Failure('invalid_field', 'Agenten müssen das Wiederöffnen begründen.');
+                $content = Support::text($input, 'content', 10000);
+                $extra['comment'] = $this->addComment($task, 'general', $content);
+                $task['status'] = 'ready';
+                $task['claim'] = null;
+                break;
             case 'comment_update':
                 $this->enforce('comment', $task);
                 $comment = $this->db->entity($this->workspace, 'comment', Support::text($input, 'comment_id', 32));
@@ -142,10 +150,11 @@ trait TaskActions
                 $plan = $this->db->entity($this->workspace, 'plan', Support::text($input, 'plan_id', 32));
                 $plans = array_filter($this->db->entities($this->workspace, 'plan'), fn($p) => $p['task_id'] === $task['id']);
                 if ($plan['task_id'] !== $task['id'] || $plan['sequence'] !== max(array_column($plans, 'sequence')) || $plan['decision'] !== 'pending') throw new Failure('stale_plan', 'Nur die aktuelle offene Planversion ist freigabefähig.', 409);
-                $plan['decision'] = ($input['approve'] ?? false) === true ? 'approved' : 'changes_requested';
+                $approved = ($input['approve'] ?? false) === true;
+                $plan['decision'] = $approved ? 'approved' : 'changes_requested';
                 $plan['decided_by'] = $this->actor->user;
                 $plan['decided_at'] = $this->now();
-                $plan['feedback'] = Support::text($input + ['feedback' => ''], 'feedback', 10000, true);
+                $plan['feedback'] = Support::text($input + ['feedback' => ''], 'feedback', 10000, $approved);
                 Support::noSecrets($plan['feedback']);
                 $plan['version']++;
                 $this->db->saveEntity($this->workspace, 'plan', $plan);
@@ -155,7 +164,8 @@ trait TaskActions
             case 'review_request':
                 $this->enforce($action === 'complete' ? 'complete' : 'comment', $task);
                 $this->assertCompletion($task);
-                $this->addComment($task, 'result', Support::text($input, 'content', 10000));
+                $content = Support::text($input + ['content' => ''], 'content', 10000, $action === 'complete' && $this->actor->isUser());
+                if (trim($content) !== '') $this->addComment($task, 'result', $content);
                 $task['status'] = $action === 'complete' ? 'done' : 'review';
                 $task['claim'] = null;
                 if ($action === 'review_request') {

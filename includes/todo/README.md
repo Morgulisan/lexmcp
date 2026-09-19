@@ -10,7 +10,7 @@ Separate, abhängigkeitssfreie PHP-8.4-Anwendung für `todo.mopoliti.de` mit deu
 4. Ohne `TODO_ENCRYPTION_KEY` wird beim ersten Start automatisch ein Schlüssel als `.encryption.key` im privaten Datenverzeichnis angelegt. Das Verzeichnis muss für PHP beschreibbar sein und darf nicht öffentlich erreichbar sein. Datenbank, Datenverzeichnis und Schlüssel gemeinsam sichern; ohne den ursprünglichen Schlüssel sind verschlüsselte OAuth-Daten und Idempotenzantworten nicht lesbar.
 5. Die Datenbanktabellen werden beim ersten HTTP-Aufruf automatisch und idempotent angelegt. `bin/migrate.php` bleibt nur als optionaler manueller Wartungsbefehl verfügbar.
 
-6. `/data/todo.mopoliti.de/` ausschließlich für den App-Benutzer zugänglich und beschreibbar anlegen. Der Standardpfad liegt relativ zur Installation unter `data/todo.mopoliti.de/`; `TODO_DATA_PATH` kann ihn überschreiben. Bei einer bestehenden Installation vorhandene Dateien aus dem alten Datenverzeichnis vor dem Umschalten übernehmen. ClamAV samt aktuellen Signaturen installieren und `TODO_MALWARE_SCANNER` auf den absoluten `clamscan`-Pfad setzen. Ohne erfolgreich abgeschlossene Prüfung werden Uploads abgewiesen. Der Scanner läuft mit Argumentliste, ohne Shell, und mit 30 Sekunden Zeitlimit.
+6. `/data/todo.mopoliti.de/` ausschließlich für den App-Benutzer zugänglich und beschreibbar anlegen. Der Standardpfad liegt relativ zur Installation unter `data/todo.mopoliti.de/`; `TODO_DATA_PATH` kann ihn überschreiben. Bei einer bestehenden Installation vorhandene Dateien aus dem alten Datenverzeichnis vor dem Umschalten übernehmen. ClamAV samt aktuellen Signaturen installieren und `TODO_MALWARE_SCANNER` auf den absoluten `clamscan`-Pfad setzen. Standardmäßig werden Dateien bei fehlendem oder technisch fehlschlagendem Scanner nach erfolgreicher strenger Formatprüfung trotzdem gespeichert; ein erkannter Malwarefund wird immer abgewiesen. Mit `TODO_MALWARE_SCAN_REQUIRED=1` lässt sich stattdessen das strikt geschlossene Verhalten aktivieren. Der Scanner läuft mit Argumentliste, ohne Shell, und mit 30 Sekunden Zeitlimit.
 7. Jede Minute den Worker ausführen:
 
    ```sh
@@ -77,7 +77,26 @@ Projektzugriff und Scopes werden beim Consent ausgewählt. Scopes: `todo:read`, 
 3. `todo_task`, `action=claim` mit `task_id`, `expected_version` und neuem `idempotency_key`. Die Antwort enthält ein nur für diesen Agenten gültiges `claim_token`.
 4. Arbeitsänderungen benötigen zusätzlich dieses Token. Die Lease gilt standardmäßig 30 Minuten, maximal 120 Minuten ab Erstellung/Verlängerung. Verlängerung nach Ablauf ist verboten. Jede Mutation liefert die neue Aufgaben-Version.
 5. Memory benötigt außerdem `expected_memory_version`, `content` und optional `mode=append`; maximal 2048 Unicode-Zeichen nach Anhängen.
-6. Bei unklarem Request-Ausgang `todo_query`, `action=operation` mit demselben `idempotency_key` prüfen. Replays identischer Requests liefern dieselbe verschlüsselt gespeicherte Antwort; anderer Inhalt unter demselben Schlüssel wird abgewiesen. Beim Retry auch die ursprüngliche erwartete Version beibehalten.
+6. Bei unklarem Request-Ausgang `todo_query`, `action=operation` mit demselben `idempotency_key` prüfen. Replays identischer Requests liefern dieselbe verschlüsselt gespeicherte Antwort; anderer Inhalt unter demselben Schlüssel wird abgewiesen. Beim Retry auch die ursprüngliche erwartete Version beibehalten. Existiert der atomar mit der Mutation gespeicherte Vorgangsdatensatz, ist der Zustand auch dann `completed`, wenn seine verschlüsselte Antwort ausnahmsweise nicht mehr gelesen werden kann; in diesem Fall sind `result=null` und `response_unavailable=true` gesetzt und die Mutation darf nicht mit einem neuen Schlüssel wiederholt werden.
+
+### Claim- und Werkzeugregeln für Agenten
+
+Ein Agent darf seinen Lauf oder Chat niemals beenden, solange er einen aktiven Claim hält. Vor jedem Ende muss er die Aufgabe mit `complete` abschließen, mit `review_request` zur Prüfung übergeben, mit `question` oder `plan_submit` gezielt auf eine notwendige Nutzeraktion warten oder den Claim mit `todo_task`, `action=release` freigeben. Technische Fehler und andere nicht nutzerlösbare Blocker verlangen die sofortige Freigabe. Der Claim-Timeout ist ausschließlich eine Ausfallsicherung für abgebrochene Läufe und kein regulärer Freigabemechanismus.
+
+`complete` ist nur zulässig, wenn aus dem Arbeitsergebnis kein weiteres ToDo für den Nutzer oder andere Beteiligte entsteht. Eine vorbereitende Aufgabe ist deshalb nicht abgeschlossen, wenn der Nutzer das vorbereitete Ergebnis anschließend noch prüfen, versenden, einreichen, freigeben oder anderweitig verwenden muss. In diesem Fall gibt der Agent die Aufgabe mit `review_request` an den Nutzer zurück und benennt im `content` sowohl das bereitgestellte Ergebnis als auch die konkret erforderliche nächste Nutzeraktion. Offene Abhängigkeiten und Unteraufgaben verhindern den Abschluss unabhängig davon ebenfalls serverseitig.
+
+Bei `todo_session` darf ein Agent nur Capabilities angeben, deren Werkzeuge aktuell verbunden, angemeldet und tatsächlich verwendbar sind. Die Aufgabensuche erfolgt mit `compatible=true`. Eine fehlende Verbindung, Anmeldung, Capability oder lokale Werkzeugverfügbarkeit ist keine Nutzerfrage: Der Agent überspringt die Aufgabe. Erkennt er die Einschränkung erst nach dem Claim, gibt er diesen sofort mit `release` frei. `question` ist ausschließlich für eine konkret beantwortbare Information oder Entscheidung bestimmt, die zur Erledigung zwingend notwendig ist und nur der Nutzer liefern kann.
+
+| Situation | Erforderliche Aktion |
+|---|---|
+| Arbeit vollständig abgeschlossen, keine Folge-ToDos | `complete` |
+| Vorbereitung abgeschlossen, daraus entsteht eine Nutzeraktion | `review_request` mit konkreter nächster Aktion |
+| Zwingende Information oder Entscheidung kann nur der Nutzer liefern | `question` |
+| Planfreigabe erforderlich | `plan_submit` |
+| Werkzeug fehlt, ist getrennt oder nicht angemeldet | Aufgabe überspringen; nach Claim `release` |
+| Lauf endet aus einem anderen Grund | vor dem Ende `release` |
+
+Agenten dürfen neue oberste Aufgaben ausschließlich als `draft` anlegen. Eine Unteraufgabe kann direkt mit `status=ready` angelegt werden, wenn der Agent die Elternaufgabe gültig geclaimt hat und deren neuester genehmigter Plan die Aktion `create_subtasks` enthält. Die Planrisikostufe muss mindestens dem höheren Risiko von Eltern- und Unteraufgabe entsprechen. `parent_id`, `expected_version` und `claim_token` beziehen sich dabei auf die Elternaufgabe.
 
 Versteckte Aliase umfassen `read_task_memory`, `update_task_memory`, `search_tasks`, `get_task`, `claim_task` sowie unterschiedliche Groß-/Kleinschreibung und Trennzeichen der fünf Toolnamen. Sichtbare Parameter bleiben kanonisch und werden validiert. Nutzeraktionen wie Planfreigabe, Reviewentscheidung, Löschen, Abbrechen und Claim-Übernahme sind nicht als MCP-Tools verfügbar.
 
@@ -86,6 +105,8 @@ Fremde MCP-Aktionen werden nicht ausgeführt oder technisch vermittelt. Die App 
 ## Policies
 
 Regeln sind JSON-Listen mit `action`, `effect` (`allow`, `deny`, `approval`) und optional `agent`, `project`, `risk_min`, `priority_max`, `capability`. Erlaubte Aktionen stehen in `Policy::ACTIONS`. Ein Verbot auf irgendeiner Ebene gewinnt; niedrigere Allow-Regeln entfernen keine Freigabeanforderung.
+
+`create_subtasks` verlangt standardmäßig eine Planfreigabe und autorisiert ausschließlich das direkte Bereitstellen von Unteraufgaben unter der geclaimten Elternaufgabe. Es erlaubt weder neue oberste Aufgaben noch Unteraufgaben unter einer anderen Aufgabe.
 
 ```json
 [{"action":"complete","effect":"approval"}]
@@ -105,7 +126,7 @@ Die neue Fachtestsuite verwendet dieselbe Service- und SQL-Schicht gegen isolier
 
 Eine lokale UI-Fixture ohne Produktivzugang startet mit `TODO_TEST_PREVIEW=1` und `php -S 127.0.0.1:18181 tests/todo/preview.php`. Sie akzeptiert nur Loopback-Requests und legt eine separate SQLite-Datei im System-Temp an. Der produktive Bootstrap importiert diese Fixture nie.
 
-Mit derselben Preview-Umgebungsvariable erzeugt `php tests/todo/seed_preview.php` lokale Beispieldaten. Anschließend prüft `php tests/todo/http.php` zehn HTTP-Sicherheitsfälle, einschließlich unzulässiger Dateiendungen, gefälschter Bildinhalte und geschlossenem Upload-Verhalten ohne Scanner. Die Fachtestsuite enthält zusätzlich Format-, Archiv- und endgültige Löschtests samt simuliertem Dateisystemfehler. Für die Formatprüfungen müssen auch im Testprozess `fileinfo`, `gd` und `zip` aktiv sein; sonst werden diese Tests ausdrücklich übersprungen. MySQL wurde in der Entwicklungsumgebung mangels Test-DSN ausdrücklich übersprungen.
+Mit derselben Preview-Umgebungsvariable erzeugt `php tests/todo/seed_preview.php` lokale Beispieldaten. Anschließend prüft `php tests/todo/http.php` zehn HTTP-Sicherheitsfälle, einschließlich unzulässiger Dateiendungen, gefälschter Bildinhalte und des Upload-Fallbacks ohne Scanner. Die Fachtestsuite enthält zusätzlich Format-, Archiv- und endgültige Löschtests samt simuliertem Dateisystemfehler. Für die Formatprüfungen müssen auch im Testprozess `fileinfo`, `gd` und `zip` aktiv sein; sonst werden diese Tests ausdrücklich übersprungen. MySQL wurde in der Entwicklungsumgebung mangels Test-DSN ausdrücklich übersprungen.
 
 Browserprüfung: Projekt und Aufgabe anlegen, bereitstellen, Kommentar speichern und Memory-Version anlegen; mobile Planfreigabe, Rückfrageantwort und Reviewabschluss einschließlich Statuswechsel verifiziert. Layout bei Desktop, 820 × 1180 und 390 × 844 geprüft. Im Browser wurden keine JavaScript-Fehler gemeldet. Der echte zentrale Login, TLS/Apache, MySQL und der Malware-Scanner müssen zusätzlich in der Zielumgebung geprüft werden.
 

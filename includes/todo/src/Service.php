@@ -55,7 +55,11 @@ final class Service
             $context = $this->workspace . ':' . $this->actor->key() . ':' . $key;
             if ($existing) {
                 if (!hash_equals($existing['request_hash'], $hash)) throw new Failure('idempotency_conflict', 'Dieser Schlüssel gehört zu einer anderen Änderung.', 409);
-                return $this->crypto->decrypt($existing['response_cipher'], $context);
+                try { return $this->crypto->decrypt($existing['response_cipher'], $context); }
+                catch (\Throwable $error) {
+                    $this->logOperationError('replay', $key, $error);
+                    throw new Failure('operation_response_unavailable', 'Der Vorgang wurde bereits abgeschlossen, seine gespeicherte Antwort ist jedoch nicht verfügbar. Nicht erneut mit einem neuen Schlüssel ausführen.', 409);
+                }
             }
             $result = match ($action) {
                 'project_save' => $this->saveProject($input),
@@ -88,7 +92,16 @@ final class Service
         $row = $this->db->query('SELECT response_cipher FROM todo_operations WHERE workspace_id=? AND actor_id=? AND operation_key=?', [$this->workspace, $this->actor->key(), $key])->fetch();
         if (!$row) return ['state' => 'not_found'];
         $pending = array_filter($this->db->entities($this->workspace, 'file_gc'), fn($file) => ($file['operation_key'] ?? null) === $key && ($file['actor_id'] ?? null) === $this->actor->key());
-        return ['state' => $pending ? 'cleanup_pending' : 'completed', 'result' => $this->crypto->decrypt($row['response_cipher'], $this->workspace . ':' . $this->actor->key() . ':' . $key)];
+        try { $result = $this->crypto->decrypt($row['response_cipher'], $this->workspace . ':' . $this->actor->key() . ':' . $key); }
+        catch (\Throwable $error) {
+            $this->logOperationError('query', $key, $error);
+            return ['state' => $pending ? 'cleanup_pending' : 'completed', 'result' => null, 'response_unavailable' => true];
+        }
+        return ['state' => $pending ? 'cleanup_pending' : 'completed', 'result' => $result];
+    }
+    private function logOperationError(string $phase, string $key, \Throwable $error): void
+    {
+        error_log('[todo operation] request=' . $this->requestId . ' phase=' . $phase . ' actor=' . $this->actor->key() . ' key_hash=' . hash('sha256', $key) . ' error=' . $error::class . ': ' . $error->getMessage());
     }
     private function queueTaskFiles(string $taskId, string $key): void
     {
@@ -181,7 +194,7 @@ final class Service
         $this->actor->userOnly();
         $old = isset($input['id']) ? $this->project(Support::text($input, 'id', 32)) : null;
         if ($old) $this->version($old, $input);
-        $project = ['id' => $old['id'] ?? Support::id(), 'version' => ($old['version'] ?? 0) + 1, 'name' => Support::text($input, 'name', 160), 'description' => Support::text($input + ['description' => ''], 'description', 10000, true), 'policy' => Policy::validate($input['policy'] ?? $old['policy'] ?? []), 'archived' => (bool)($input['archived'] ?? false)];
+        $project = ['id' => $old['id'] ?? $this->newProjectId(), 'version' => ($old['version'] ?? 0) + 1, 'name' => Support::text($input, 'name', 160), 'description' => Support::text($input + ['description' => ''], 'description', 10000, true), 'policy' => Policy::validate($input['policy'] ?? $old['policy'] ?? []), 'archived' => (bool)($input['archived'] ?? false)];
         Support::noSecrets($project['description']);
         $project['timezone'] = Support::text($input + ['timezone' => $old['timezone'] ?? 'Europe/Berlin'], 'timezone', 100);
         if (!in_array($project['timezone'], \DateTimeZone::listIdentifiers(), true)) throw new Failure('invalid_timezone', 'Unbekannte Zeitzone.');
@@ -208,11 +221,17 @@ final class Service
         $this->audit('project_save', null, ['id' => $project['id'], 'version' => $project['version']]);
         return $project;
     }
+    private function newProjectId(): string
+    {
+        do $id = Support::shortId();
+        while ($this->db->query('SELECT id FROM todo_entities WHERE workspace_id=? AND kind=? AND id=?', [$this->workspace, 'project', $id])->fetchColumn() !== false);
+        return $id;
+    }
     private function saveCapability(array $input): array
     {
         $this->actor->userOnly();
         $id = isset($input['id']) ? Support::text($input, 'id', 64) : Support::id();
-        if (!preg_match('/^[a-z0-9][a-z0-9._-]*$/D', $id)) throw new Failure('invalid_id', 'Capability-ID ist ungültig.');
+        if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]*$/D', $id)) throw new Failure('invalid_id', 'Capability-ID ist ungültig.');
         $value = ['id' => $id, 'version' => 1, 'name' => Support::text($input, 'name', 160)];
         foreach ($this->db->entities($this->workspace, 'capability') as $old) if ($old['id'] === $id) { $this->version($old, $input); $value['version'] = $old['version'] + 1; }
         $value['description'] = Support::text($input + ['description' => ''], 'description', 10000, true);
@@ -260,6 +279,7 @@ final class Service
         $project = $this->project(Support::text($input, 'project_id', 32));
         if ($project['archived']) throw new Failure('archived', 'Projekt ist archiviert.', 409);
         $task = ['id' => Support::id(), 'version' => 1, 'project_id' => $project['id'], 'parent_id' => $input['parent_id'] ?? null, 'title' => Support::text($input, 'title', 200), 'description' => '', 'status' => 'draft', 'priority' => 3, 'risk' => 1, 'effort' => 3, 'start_at' => null, 'due_at' => null, 'timezone' => 'Europe/Berlin', 'tags' => [], 'capabilities' => [], 'skill_ids' => [], 'dependencies' => [], 'claim' => null, 'policy' => [], 'recurrence' => null, 'recurrence_source' => null, 'dependency_target' => null, 'archived_at' => null, 'created_at' => $this->now(), 'updated_at' => $this->now(), 'created_by' => $this->actor->key(), 'agent_error' => false];
+        $parent = null;
         if ($task['parent_id'] !== null) {
             $parent = $this->task(Support::text($input, 'parent_id', 32));
             if ($parent['project_id'] !== $project['id']) throw new Failure('invalid_parent', 'Unteraufgaben gehören zum selben Projekt.');
@@ -268,8 +288,13 @@ final class Service
         $task = $this->fields($input, $task);
         $this->enforce('draft', $task);
         if (($input['status'] ?? 'draft') !== 'draft') {
-            $this->actor->userOnly();
             if ($input['status'] !== 'ready') throw new Failure('invalid_transition', 'Neue Aufgaben sind Entwürfe oder bereit.');
+            if (!$this->actor->isUser()) {
+                if ($parent === null) throw new Failure('user_only', 'Agenten dürfen nur freigegebene Unteraufgaben direkt bereitstellen.', 403);
+                $authorizationTask = $parent;
+                $authorizationTask['risk'] = max($parent['risk'], $task['risk']);
+                $this->enforce('create_subtasks', $authorizationTask);
+            }
             $task['status'] = 'ready';
         }
         $this->db->saveTask($this->workspace, $task, true);

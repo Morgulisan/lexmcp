@@ -13,7 +13,15 @@ final class Failure extends \RuntimeException
 
 final class Support
 {
-    public static function id(): string { return bin2hex(random_bytes(16)); }
+    public static function id(): string { return self::randomId(10); }
+    public static function shortId(): string { return self::randomId(8); }
+    private static function randomId(int $length): string
+    {
+        $alphabet = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
+        $id = '';
+        for ($i = 0; $i < $length; $i++) $id .= $alphabet[random_int(0, 61)];
+        return $id;
+    }
     public static function json(mixed $value): string { return json_encode($value, JSON_THROW_ON_ERROR | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES); }
     public static function decode(string $value): array { return json_decode($value, true, 64, JSON_THROW_ON_ERROR); }
     public static function text(array $input, string $key, int $max, bool $empty = false): string
