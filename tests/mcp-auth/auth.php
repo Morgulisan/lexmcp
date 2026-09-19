@@ -131,4 +131,5 @@ $_SERVER['PHP_AUTH_USER']='gateway-one';$_SERVER['PHP_AUTH_PW']='test-secret-one
 check(!$oauth->introspect(['token'=>$tokens['access_token']])['active'],'deleting key revokes service connections');
 unset($_COOKIE['mpauth_session']);[$status,,$html]=route('/');
 check($status===200&&str_contains($html,'autocomplete="current-password"')&&!str_contains($html,'name="api_key"'),'keys require login');
+check(str_contains($html,'width=device-width,initial-scale=1')&&str_contains($html,'@media(max-width:480px)'),'login page includes mobile viewport and responsive layout');
 ob_end_clean();echo "OAuth integration: $checks checks passed.\n";
