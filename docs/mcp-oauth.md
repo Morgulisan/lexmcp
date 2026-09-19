@@ -38,7 +38,7 @@ Jeder Benutzer verwaltet nur seine eigenen Einträge. Ersetzen wirkt auf folgend
 | Öffentliche PHP-Dateien | `html/auth.mopoliti.de/` | `/html/auth.mopoliti.de/` |
 | Privater OAuth-Code | `includes/mcp-auth/` | `/includes/mcp-auth/` |
 | Masterkey und optionale private Konfiguration | nicht versioniert | `/data/mcp-auth/` |
-| Gateway, Compose und Nginx-Vorlage | `deploy/mcp-gateway/` | `/opt/mcp-gateway/` auf dem MCP-Server |
+| Gateway, Compose und Nginx-Vorlage | `includes/mcp-gateway/` | `/opt/mcp-gateway/` auf dem MCP-Server |
 | Tests | `tests/mcp-auth/` | isolierte Testcontainer |
 
 Der Account-Server wird durch Commit und Push deployed. PHP 8.4 benötigt `pdo_mysql`, `curl`, `mbstring` und `sodium`. Apache muss `.htaccess`/mod_rewrite zulassen; `display_errors=Off` verwenden. Die vorhandene `/includes/api/sql.php` liefert `connectToSQL(): PDO` (überschreibbar mit `MCP_AUTH_DATABASE_INCLUDE`).
@@ -53,7 +53,7 @@ Stündlich `php /includes/mcp-auth/bin/cleanup.php` ausführen oder in bestehend
 
 WAHA läuft auf `127.0.0.1:3000/mcp`, Obsidian auf `127.0.0.1:8000/mcp`. Beim vorhandenen WAHA-Zugang wird `X-Api-Key` verwendet, bei Obsidian `Authorization: Bearer`.
 
-1. `deploy/mcp-gateway/` übertragen und `python3 prepare-server.py` ausführen. Das Skript legt `/opt/mcp-gateway` an, erhält bestehende Maschinensecrets und entfernt die beiden bekannten redundanten Key-Dateien des ursprünglichen ungenutzten Setups. Es liest oder importiert keine Benutzer-Keys.
+1. `includes/mcp-gateway/` übertragen und `python3 prepare-server.py` ausführen. Das Skript legt `/opt/mcp-gateway` an, erhält bestehende Maschinensecrets und entfernt die beiden bekannten redundanten Key-Dateien des ursprünglichen ungenutzten Setups. Es liest oder importiert keine Benutzer-Keys.
 2. Die SHA-256-Verifikatoren in der erzeugten `/opt/mcp-gateway/auth-config.php` müssen zu `includes/mcp-auth/config/services.php` passen. Beim aktuellen Server sind sie bereits abgestimmt. Klartext-Gateway-Secrets nicht committen.
 3. In `/opt/mcp-gateway` `docker compose up -d` ausführen; nach Code-/Secret-Änderungen `docker compose restart gateway`. Der Container läuft als UID/GID 65534, mit schreibgeschütztem Dateisystem und einem read-only eingebundenen Secret-Verzeichnis. Er lauscht nur auf `127.0.0.1:8787`.
 4. Vor Nginx-Änderungen die aktiven Dateien sichern. Die Locations aus `nginx-locations.conf` jeweils in den HTTPS-Serverblock für whtspp/obsdn übernehmen. `nginx -t` prüfen, dann `systemctl reload nginx`. Andere Dashboard-/API-Routen bleiben unverändert.

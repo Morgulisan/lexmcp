@@ -2,7 +2,7 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import {once} from 'node:events';
-import {createGateway} from '../../deploy/mcp-gateway/gateway.mjs';
+import {createGateway} from '../../includes/mcp-gateway/gateway.mjs';
 test('Discovery, identity isolation, key replacement, sessions and failure modes',async()=>{
  const seen=[];
  const backend=http.createServer((req,res)=>{
