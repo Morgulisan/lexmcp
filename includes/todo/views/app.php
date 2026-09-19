@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="de">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="csrf-token" content="<?= \Todo\Application::h($csrf) ?>"><title>Gemeinsam · Aufgaben & Agenten</title><link rel="stylesheet" href="/assets/app.css"><script src="/assets/app.js" defer></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="csrf-token" content="<?= \Todo\Application::h($csrf) ?>"><title>Gemeinsam · Aufgaben & Agenten</title><link rel="stylesheet" href="/assets/app.css"><link rel="stylesheet" href="/assets/task-groups.css"><script src="/assets/app.js" defer></script></head>
 <body>
 <div class="app-shell">
   <aside class="sidebar">

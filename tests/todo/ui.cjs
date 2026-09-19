@@ -2,15 +2,15 @@ const {chromium}=require('playwright');
 const fs=require('fs'),assert=require('node:assert/strict');
 (async()=>{
  const browser=await chromium.launch({channel:'chrome',headless:true});
- const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[],writes=[];
+ const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[],writes=[];let taskStatus='ready';
  page.on('pageerror',e=>errors.push(e.message));
  const project={id:'project1',version:1,name:'Website',description:'',timezone:'Europe/Berlin',policy:[],archived:false};
  const agent={id:'agent1',version:1,name:'Recherche-Agent',client_id:'client1',projects:['project1'],scopes:['todo:read','todo:write'],revoked_at:null,last_activity:null};
  await page.route('http://localhost/**',route=>{
   const url=new URL(route.request().url());
   if(url.pathname==='/api'){
-   const req=route.request().postDataJSON();if(req.mode==='write'){writes.push(req);return route.fulfill({json:{id:'new'}});}
-   const data={projects:[project],tasks:{items:[],next_offset:null,total:0},task:{task:{id:'new',project_id:'project1',title:'Neu',status:'ready',priority:3,risk:1,effort:2,capabilities:['drive'],skill_ids:[],dependencies:[],tags:[]},subtasks:[],plans:[],reviews:[],comments:[],artifacts:[]},skills:[],capabilities:[{id:'drive',version:3,name:'Google Drive',description:'Dateien lesen'}],settings:{views:[],agents:[agent],policy:[],policy_hash:'hash'}};
+   const req=route.request().postDataJSON();if(req.mode==='write'){writes.push(req);if(req.action==='reopen')taskStatus='ready';return route.fulfill({json:{id:'new'}});}
+   const data={projects:[project],tasks:{items:[],next_offset:null,total:0},task:{task:{id:'new',project_id:'project1',title:'Neu',status:taskStatus,priority:3,risk:1,effort:2,capabilities:['drive'],skill_ids:[],dependencies:[],tags:[]},subtasks:[],plans:[],reviews:[],comments:[],artifacts:[]},skills:[],capabilities:[{id:'drive',version:3,name:'Google Drive',description:'Dateien lesen'}],settings:{views:[],agents:[agent],policy:[],policy_hash:'hash'}};
    return route.fulfill({json:data[req.action]||{}});
   }
   const file=url.pathname==='/'?'includes/todo/views/app.php':'html/todo.mopoliti.de'+url.pathname;
@@ -86,6 +86,12 @@ const fs=require('fs'),assert=require('node:assert/strict');
  assert.equal(await page.locator('#page-title select').inputValue(),'project1');
  await page.locator('[data-view="list"]').click();
  await page.evaluate(()=>{const base={project_id:'project1',tags:[],due_at:null};state.tasks=[{...base,id:'done',title:'Fertig',status:'done',start_at:Date.now()/1000+86400},{...base,id:'future',title:'Später',status:'ready',start_at:Date.now()/1000+86400},{...base,id:'open',title:'Jetzt',status:'ready',start_at:Date.now()/1000-1}];renderTasks();});
+ assert.deepEqual(await page.locator('.task-section').evaluateAll(groups=>groups.map(group=>[group.dataset.taskGroup,group.open])),[['open',true],['waiting',false],['done',false]]);
+ await page.locator('[data-task-group="waiting"] summary').click();
+ assert.equal(await page.locator('[data-task-group="waiting"]').evaluate(group=>group.open),true);
+ await page.locator('#search').fill('Später');
+ assert.equal(await page.locator('[data-task-group="waiting"]').evaluate(group=>group.open),true);
+ await page.locator('#search').fill('');
  assert.deepEqual(await page.locator('#content .task-row').evaluateAll(rows=>rows.map(r=>r.dataset.task)),['open','future','done']);
  for(const draft of [false,true]){
   await page.locator('.new-task').click();
@@ -102,6 +108,19 @@ const fs=require('fs'),assert=require('node:assert/strict');
  await page.locator('#comment-form button').click();
  await page.waitForFunction(()=>!document.querySelector('#comment-form button').disabled);
  assert.equal(writes.find(w=>w.action==='comment').input.type,'general');
+ taskStatus='done';await page.evaluate(()=>showTask('new'));
+ assert.equal(await page.locator('#comment-form button').textContent(),'Wieder öffnen');
+ await page.locator('#comment-form textarea').fill('Bitte nacharbeiten');
+ await page.locator('#comment-form button').click();
+ await page.waitForFunction(()=>document.querySelector('#comment-form button').textContent==='Kommentar hinzufügen');
+ const reopen=writes.find(w=>w.action==='reopen');
+ assert.equal(reopen.input.content,'Bitte nacharbeiten');assert(!('type' in reopen.input));
+ await page.locator('[data-action="complete"]').click();
+ assert.equal(await dialog.locator('[name="content"]').getAttribute('required'),null);
+ assert.match(await dialog.locator('label').textContent(),/Ergebnis \(optional\)/);
+ await dialog.locator('[type="submit"]').click();
+ await dialog.waitFor({state:'hidden'});
+ assert.equal(writes.find(w=>w.action==='complete').input.content,'');
  await page.locator('[data-command="close-detail"]').click();
  await page.setViewportSize({width:390,height:844});
  await page.locator('.page-heading [data-command="new-task"]').click();

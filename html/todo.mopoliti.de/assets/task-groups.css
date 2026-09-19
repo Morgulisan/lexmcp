@@ -1,0 +1,30 @@
+.task-section > summary {
+  align-items: center;
+  cursor: pointer;
+  list-style: none;
+}
+
+.task-section > summary::-webkit-details-marker {
+  display: none;
+}
+
+.task-section > summary::before {
+  content: "›";
+  font-size: 18px;
+  line-height: 1;
+  margin-right: 9px;
+  transform: rotate(0);
+  transition: transform 0.15s ease;
+}
+
+.task-section[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.task-section > summary > span:first-of-type {
+  margin-right: auto;
+}
+
+.task-section-content {
+  padding-bottom: 1px;
+}
