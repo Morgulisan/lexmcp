@@ -14,7 +14,7 @@ Separate, abhängigkeitssfreie PHP-8.4-Anwendung für `todo.mopoliti.de` mit deu
 7. Jede Minute den Worker ausführen:
 
    ```sh
-   php /includes/todo/bin/worker.php
+   php /data/cron/worker.php
    ```
 
 8. Über HTTPS anmelden, Projekt erstellen und den MCP unter `https://todo.mopoliti.de/mcp` verbinden. Vor dem Produktiveinsatz die MySQL-Tests, den tatsächlichen zentralen Login, Upload-Scanner und OAuth-Callback im Zielhosting prüfen.
