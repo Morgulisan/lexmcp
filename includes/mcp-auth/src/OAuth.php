@@ -9,6 +9,9 @@ final class OAuth
 {
     private const SESSION_COOKIE = 'mpauth_session';
     private const LOGIN_NONCE_COOKIE = 'mpauth_login_nonce';
+    private const ACCESS_TOKEN_TTL_SECONDS = 3600;
+    private const REFRESH_TOKEN_TTL_SECONDS = 2592000;
+    private const REFRESH_RETRY_GRACE_SECONDS = 60;
 
     public function __construct(private readonly PDO $pdo) {}
 
@@ -490,9 +493,19 @@ final class OAuth
             }
             Config::assertUser((int)$row['user_id']);
             if ($row['used_at'] !== null) {
-                $this->pdo->prepare('UPDATE mpauth_oauth_tokens SET revoked_at=NOW(6) WHERE family_id=?')->execute([$row['family_id']]);
+                $usedAt = strtotime((string) $row['used_at']);
+                if ($usedAt === false || time() - $usedAt > self::REFRESH_RETRY_GRACE_SECONDS) {
+                    $this->pdo->prepare('UPDATE mpauth_oauth_tokens SET revoked_at=NOW(6) WHERE family_id=?')->execute([$row['family_id']]);
+                    $this->pdo->commit();
+                    throw new AppError('invalid_grant', 'Refresh token reuse detected; the token family was revoked.', 400);
+                }
+                // Network retries and concurrent client workers can repeat a
+                // successful refresh before they observe its response. During
+                // a short grace period, issue another pair rather than revoke
+                // the complete connection. Later replay still revokes it.
+                $tokens = $this->issueTokens((int) $row['user_id'], $clientId, $resource, $scopes, (string) $row['family_id']);
                 $this->pdo->commit();
-                throw new AppError('invalid_grant', 'Refresh token reuse detected; the token family was revoked.', 400);
+                return $tokens;
             }
             if ($row['revoked_at'] !== null || strtotime((string) $row['expires_at']) <= time()
                 || !hash_equals((string) $row['client_id'], $clientId) || !hash_equals((string) $row['resource'], $resource)) {
@@ -527,11 +540,11 @@ final class OAuth
         $access = Util::randomToken(32);
         $refresh = Util::randomToken(32);
         $sql = 'INSERT INTO mpauth_oauth_tokens(token_hash,token_type,family_id,client_id,user_id,resource,scopes_json,expires_at) VALUES (?,?,?,?,?,?,?,DATE_ADD(NOW(6), INTERVAL %d SECOND))';
-        $accessStmt = $this->pdo->prepare(sprintf($sql, 600));
+        $accessStmt = $this->pdo->prepare(sprintf($sql, self::ACCESS_TOKEN_TTL_SECONDS));
         $accessStmt->execute([Util::tokenHash($access), 'access', $family, $clientId, $userId, $resource, Util::jsonEncode($scopes)]);
-        $refreshStmt = $this->pdo->prepare(sprintf($sql, 2592000));
+        $refreshStmt = $this->pdo->prepare(sprintf($sql, self::REFRESH_TOKEN_TTL_SECONDS));
         $refreshStmt->execute([Util::tokenHash($refresh), 'refresh', $family, $clientId, $userId, $resource, Util::jsonEncode($scopes)]);
-        return ['access_token' => $access, 'token_type' => 'Bearer', 'expires_in' => 600, 'refresh_token' => $refresh, 'scope' => implode(' ', $scopes), 'resource' => $resource];
+        return ['access_token' => $access, 'token_type' => 'Bearer', 'expires_in' => self::ACCESS_TOKEN_TTL_SECONDS, 'refresh_token' => $refresh, 'scope' => implode(' ', $scopes), 'resource' => $resource];
     }
 
     private function authenticateLegacy(array $post): int
