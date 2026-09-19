@@ -16,3 +16,10 @@ dialog.task-editor{width:1000px;padding:22px 26px}.task-editor #editor-fields{di
 .rating label{width:calc(20% - 2px);margin-right:2px!important}.rating span{padding:5px 0}.task-editor .rating legend{font-size:10px}
 .task-tags,.tag-chips{display:flex;flex-wrap:wrap;gap:5px}.task-tags{margin-top:7px}.tag-chip{display:inline-flex;align-items:center;gap:3px;border-radius:999px;background:#eaf2ff;color:#3766a8;padding:2px 7px;font-size:9px;font-weight:600;line-height:1.4}.tag-chip button{border:0;background:transparent;color:inherit;padding:0;font-size:14px;line-height:11px}.tag-input{display:flex;align-items:center;gap:6px;flex-wrap:wrap;min-height:42px;border:1px solid #d5deed;border-radius:7px;padding:6px 8px;background:#fff}.tag-input input[type=hidden]{display:none}.tag-input .tag-entry{flex:1;min-width:115px;width:auto;border:0;padding:4px;outline:0;font-size:13px}.tags-field small{font-size:10px;font-weight:400;color:var(--muted)}
 .sidebar-bottom .logout-button{display:grid;place-items:center;width:30px;height:30px;padding:5px;color:#607797}.logout-button svg{width:19px;height:19px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}.sidebar-bottom .logout-button:hover{color:#2563eb;background:#eaf2ff}
+
+/* Task state indicator: deliberately distinct from an interactive checkbox. */
+.task-mark{display:grid;place-items:center;border-radius:50%;color:transparent;font-size:12px;font-weight:700;line-height:1}
+.task-mark:empty:after{content:'';width:5px;height:5px;border-radius:50%;background:#c9d4cc}
+.task-row[data-overdue=true] .task-mark{background:#fff0ec;border-color:#c97968;color:#ad5545}
+.task-row[data-claimed=true] .task-mark{background:#ececf8;border-color:#8274a6;color:#7465a0}
+.task-row[data-status=done] .task-mark{background:#4f885d;border-color:#4f885d;color:#fff}
