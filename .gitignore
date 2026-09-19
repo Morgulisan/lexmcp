@@ -9,6 +9,6 @@
 *.log
 
 /data/mcp-auth/
-/deploy/mcp-gateway/secrets/
-/deploy/mcp-gateway/auth-config.php
+/includes/mcp-gateway/secrets/
+/includes/mcp-gateway/auth-config.php
 /includes/mcp-auth/config/local.php
