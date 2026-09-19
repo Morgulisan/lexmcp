@@ -28,5 +28,5 @@ if($tasks){
     $body.='--'.$boundary."\r\nContent-Disposition: form-data; name=\"file\"; filename=\"test.csv\"\r\nContent-Type: text/csv\r\n\r\nName,Amount\r\nAlice,1\r\n--".$boundary."--\r\n";
     status('Unsupported extension is rejected',415,request('/upload','POST',str_replace('test.csv','test.exe',$body),['Content-Type: multipart/form-data; boundary='.$boundary,'X-CSRF-Token: local-preview-only']));
     status('Forged image content is rejected',415,request('/upload','POST',str_replace('test.csv','test.png',$body),['Content-Type: multipart/form-data; boundary='.$boundary,'X-CSRF-Token: local-preview-only']));
-    status('Uploads fail closed without configured malware scanner',503,request('/upload','POST',$body,['Content-Type: multipart/form-data; boundary='.$boundary,'X-CSRF-Token: local-preview-only']));
+    status('Validated uploads fall back without configured malware scanner',200,request('/upload','POST',$body,['Content-Type: multipart/form-data; boundary='.$boundary,'X-CSRF-Token: local-preview-only']));
 }

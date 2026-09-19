@@ -23,17 +23,13 @@ final class FileStore
         if($size===false||$size<1||$size>10*1024*1024)throw new Failure('file_size','Dateien dürfen maximal 10 MiB groß sein.',413);
         $format = FileValidator::validate($file['tmp_name'], (string)($file['name'] ?? ''));
         $scanner=Config::env('TODO_MALWARE_SCANNER');
-        if($scanner===''||!is_file($scanner)||!is_callable('proc_open'))throw new Failure('scanner_unavailable','Der Malware-Scanner ist nicht eingerichtet. Upload wurde nicht gespeichert.',503);
-        $pipes=[];$process=proc_open([$scanner,'--no-summary','--',$file['tmp_name']],[0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes,null,null,['bypass_shell'=>true]);
-        if(!is_resource($process))throw new Failure('scanner_unavailable','Malware-Prüfung nicht verfügbar.',503);
-        fclose($pipes[0]);stream_set_blocking($pipes[1],false);stream_set_blocking($pipes[2],false);$deadline=microtime(true)+30;$exit=-1;
-        do{
-            stream_get_contents($pipes[1]);stream_get_contents($pipes[2]);$status=proc_get_status($process);
-            if(!$status['running']){$exit=$status['exitcode'];break;}
-            if(microtime(true)>$deadline){proc_terminate($process);break;}usleep(100000);
-        }while(true);
-        fclose($pipes[1]);fclose($pipes[2]);proc_close($process);
-        if($exit!==0)throw new Failure($exit===1?'malware_detected':'scanner_failed',$exit===1?'Die Datei wurde als unsicher abgewiesen.':'Die Malware-Prüfung konnte nicht abgeschlossen werden.',422);
+        $scannerRequired=Config::env('TODO_MALWARE_SCAN_REQUIRED','0')==='1';
+        if($scanner===''||!is_file($scanner)||!is_callable('proc_open')){
+            if($scannerRequired)throw new Failure('scanner_unavailable','Der Malware-Scanner ist nicht eingerichtet. Upload wurde nicht gespeichert.',503);
+            error_log('Todo upload: malware scanner unavailable; accepting file after format validation.');
+            $scanner='';
+        }
+        if($scanner!=='')self::scan($scanner,$file['tmp_name'],$scannerRequired);
         $hash=hash_file('sha256',$file['tmp_name']);$key=Support::text($input,'idempotency_key',128);
         $id=hash('sha256',$service->workspace.':'.$input['task_id'].':'.$key.':'.$hash);
         $path=self::path($id);
@@ -47,6 +43,27 @@ final class FileStore
                 return $service->mutate('file_add',$input+['storage_id'=>$id,'sha256'=>$hash,'size'=>$size,'mime'=>$format['mime'],'title'=>mb_substr(basename(str_replace('\\','/',$file['name'])),0,200)]);
             }catch(\Throwable $error){if(!$existed&&is_file($path))unlink($path);throw $error;}
         }finally{flock($lock,LOCK_UN);fclose($lock);}
+    }
+    private static function scan(string $scanner, string $path, bool $required): void
+    {
+        $pipes=[];$process=proc_open([$scanner,'--no-summary','--',$path],[0=>['pipe','r'],1=>['pipe','w'],2=>['pipe','w']],$pipes,null,null,['bypass_shell'=>true]);
+        if(!is_resource($process)){
+            if($required)throw new Failure('scanner_unavailable','Malware-Prüfung nicht verfügbar.',503);
+            error_log('Todo upload: malware scanner could not be started; accepting file after format validation.');
+            return;
+        }
+        fclose($pipes[0]);stream_set_blocking($pipes[1],false);stream_set_blocking($pipes[2],false);$deadline=microtime(true)+30;$exit=-1;
+        do{
+            stream_get_contents($pipes[1]);stream_get_contents($pipes[2]);$status=proc_get_status($process);
+            if(!$status['running']){$exit=$status['exitcode'];break;}
+            if(microtime(true)>$deadline){proc_terminate($process);break;}usleep(100000);
+        }while(true);
+        fclose($pipes[1]);fclose($pipes[2]);proc_close($process);
+        if($exit===1)throw new Failure('malware_detected','Die Datei wurde als unsicher abgewiesen.',422);
+        if($exit!==0){
+            if($required)throw new Failure('scanner_failed','Die Malware-Prüfung konnte nicht abgeschlossen werden.',422);
+            error_log('Todo upload: malware scan failed with exit code '.$exit.'; accepting file after format validation.');
+        }
     }
     public static function remove(string $id): bool
     {

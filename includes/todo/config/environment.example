@@ -5,5 +5,7 @@ TODO_DATABASE_INCLUDE=/includes/api/sql.php
 TODO_DATA_PATH=/data/todo.mopoliti.de
 # Optional. Without this value a key is generated once in TODO_DATA_PATH.
 TODO_ENCRYPTION_KEY=
-# Absolute path to clamscan; uploads fail closed when missing or unhealthy.
+# Absolute path to clamscan. Without it, validated uploads use the fallback.
 TODO_MALWARE_SCANNER=/usr/bin/clamscan
+# Set to 1 only if uploads must fail when the scanner is missing or unhealthy.
+TODO_MALWARE_SCAN_REQUIRED=0
